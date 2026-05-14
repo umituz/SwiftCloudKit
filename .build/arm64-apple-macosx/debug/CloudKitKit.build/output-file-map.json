@@ -1,0 +1,40 @@
+{
+  "": {
+    "swift-dependencies": "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/.build/arm64-apple-macosx/debug/CloudKitKit.build/primary.swiftdeps"
+  },
+  "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/Sources/CloudKitKit/CloudKitAssetCleanup.swift": {
+    "dependencies": "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/.build/arm64-apple-macosx/debug/CloudKitKit.build/CloudKitAssetCleanup.d",
+    "object": "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/.build/arm64-apple-macosx/debug/CloudKitKit.build/CloudKitAssetCleanup.swift.o",
+    "swiftmodule": "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/.build/arm64-apple-macosx/debug/CloudKitKit.build/CloudKitAssetCleanup~partial.swiftmodule",
+    "swift-dependencies": "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/.build/arm64-apple-macosx/debug/CloudKitKit.build/CloudKitAssetCleanup.swiftdeps",
+    "diagnostics": "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/.build/arm64-apple-macosx/debug/CloudKitKit.build/CloudKitAssetCleanup.dia"
+  },
+  "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/Sources/CloudKitKit/CloudKitLocalStore.swift": {
+    "dependencies": "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/.build/arm64-apple-macosx/debug/CloudKitKit.build/CloudKitLocalStore.d",
+    "object": "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/.build/arm64-apple-macosx/debug/CloudKitKit.build/CloudKitLocalStore.swift.o",
+    "swiftmodule": "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/.build/arm64-apple-macosx/debug/CloudKitKit.build/CloudKitLocalStore~partial.swiftmodule",
+    "swift-dependencies": "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/.build/arm64-apple-macosx/debug/CloudKitKit.build/CloudKitLocalStore.swiftdeps",
+    "diagnostics": "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/.build/arm64-apple-macosx/debug/CloudKitKit.build/CloudKitLocalStore.dia"
+  },
+  "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/Sources/CloudKitKit/CloudKitManager.swift": {
+    "dependencies": "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/.build/arm64-apple-macosx/debug/CloudKitKit.build/CloudKitManager.d",
+    "object": "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/.build/arm64-apple-macosx/debug/CloudKitKit.build/CloudKitManager.swift.o",
+    "swiftmodule": "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/.build/arm64-apple-macosx/debug/CloudKitKit.build/CloudKitManager~partial.swiftmodule",
+    "swift-dependencies": "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/.build/arm64-apple-macosx/debug/CloudKitKit.build/CloudKitManager.swiftdeps",
+    "diagnostics": "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/.build/arm64-apple-macosx/debug/CloudKitKit.build/CloudKitManager.dia"
+  },
+  "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/Sources/CloudKitKit/CloudKitRecordFactory.swift": {
+    "dependencies": "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/.build/arm64-apple-macosx/debug/CloudKitKit.build/CloudKitRecordFactory.d",
+    "object": "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/.build/arm64-apple-macosx/debug/CloudKitKit.build/CloudKitRecordFactory.swift.o",
+    "swiftmodule": "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/.build/arm64-apple-macosx/debug/CloudKitKit.build/CloudKitRecordFactory~partial.swiftmodule",
+    "swift-dependencies": "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/.build/arm64-apple-macosx/debug/CloudKitKit.build/CloudKitRecordFactory.swiftdeps",
+    "diagnostics": "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/.build/arm64-apple-macosx/debug/CloudKitKit.build/CloudKitRecordFactory.dia"
+  },
+  "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/Sources/CloudKitKit/CloudKitSyncCoordinator.swift": {
+    "dependencies": "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/.build/arm64-apple-macosx/debug/CloudKitKit.build/CloudKitSyncCoordinator.d",
+    "object": "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/.build/arm64-apple-macosx/debug/CloudKitKit.build/CloudKitSyncCoordinator.swift.o",
+    "swiftmodule": "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/.build/arm64-apple-macosx/debug/CloudKitKit.build/CloudKitSyncCoordinator~partial.swiftmodule",
+    "swift-dependencies": "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/.build/arm64-apple-macosx/debug/CloudKitKit.build/CloudKitSyncCoordinator.swiftdeps",
+    "diagnostics": "/Users/umituz/Desktop/github/umituz/apps/mobile/_new/Packages/CloudKitKit/.build/arm64-apple-macosx/debug/CloudKitKit.build/CloudKitSyncCoordinator.dia"
+  }
+}
