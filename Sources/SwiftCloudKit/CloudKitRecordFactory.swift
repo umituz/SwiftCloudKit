@@ -1,166 +1,133 @@
 //
 //  CloudKitRecordFactory.swift
-//  Generic CloudKit Record Factory
+//  SwiftCloudKit
 //
-//  Created for generic CloudKit integration across all projects
-//  Reference: CLOUDKIT_STRUCTURE_FOR_OTHER_PROJECTS.md
+//  Generic utilities for CloudKit record creation and manipulation.
+//  Each app should create its own record factory extension or wrapper.
 //
 
 import CloudKit
 import Foundation
 
-/// CloudKit record factory - handles model↔record conversions with proper naming conventions
+/// Generic CloudKit record factory utilities.
+/// Provides shared helpers for record creation, ID generation, timestamps, and asset handling.
 public enum CloudKitRecordFactory {
-
-    // MARK: - Record Types
-
-    public enum RecordType {
-        public static let userProfile = "UserProfile"
-        public static let appData = "AppData"
-        public static let settings = "Settings"
-        // Add more record types as needed per project
-    }
 
     // MARK: - Zone ID
 
+    /// Get the shared zone ID from CloudKitManager.
+    @MainActor
     public static var zoneID: CKRecordZone.ID {
         return CloudKitManager.shared.zoneID
     }
 
     // MARK: - Record ID Generation
 
-    /// Generate record ID for user profile (single record per user)
-    public static func userProfileRecordID() -> CKRecord.ID {
-        return CKRecord.ID(
-            recordName: "userprofile_default",
-            zoneID: zoneID
-        )
+    /// Generate a record ID with the "type_identifier" naming convention.
+    @MainActor
+    public static func recordID(type: String, identifier: String) -> CKRecord.ID {
+        return CKRecord.ID(recordName: "\(type.lowercased())_\(identifier)", zoneID: zoneID)
     }
 
-    /// Generate record ID for app data (single record per user)
-    public static func appDataRecordID() -> CKRecord.ID {
-        return CKRecord.ID(
-            recordName: "appdata_default",
-            zoneID: zoneID
-        )
+    /// Generate a singleton record ID (one per user per type).
+    @MainActor
+    public static func singletonRecordID(type: String) -> CKRecord.ID {
+        return CKRecord.ID(recordName: "\(type.lowercased())_default", zoneID: zoneID)
     }
 
-    /// Generate record ID for settings (single record per user)
-    public static func settingsRecordID() -> CKRecord.ID {
-        return CKRecord.ID(
-            recordName: "settings_default",
-            zoneID: zoneID
-        )
-    }
+    // MARK: - Timestamps
 
-    /// Generate record ID with custom name
-    public static func customRecordID(name: String) -> CKRecord.ID {
-        return CKRecord.ID(
-            recordName: name,
-            zoneID: zoneID
-        )
-    }
-
-    // MARK: - Record Creation
-
-    /// Create a user profile record
-    public static func createUserProfile() -> CKRecord {
-        let recordID = userProfileRecordID()
-        let record = CKRecord(recordType: RecordType.userProfile, recordID: recordID)
-
-        // Set default values
-        record["created_at"] = Date()
-        record["updated_at"] = Date()
-
-        return record
-    }
-
-    /// Create an app data record
-    public static func createAppData() -> CKRecord {
-        let recordID = appDataRecordID()
-        let record = CKRecord(recordType: RecordType.appData, recordID: recordID)
-
-        // Set default values
-        record["created_at"] = Date()
-        record["updated_at"] = Date()
-
-        return record
-    }
-
-    /// Create a settings record
-    public static func createSettings() -> CKRecord {
-        let recordID = settingsRecordID()
-        let record = CKRecord(recordType: RecordType.settings, recordID: recordID)
-
-        // Set default values
-        record["created_at"] = Date()
-        record["updated_at"] = Date()
-
-        return record
-    }
-
-    // MARK: - Helper Methods
-
-    /// Update timestamp fields on a record
-    public static func updateTimestamps(_ record: CKRecord) {
+    /// Set created_at and updated_at on a record.
+    public static func setTimestamps(_ record: CKRecord) {
         let now = Date()
-
-        // Update "updated_at" if it exists
-        if record["updated_at"] == nil {
-            record["updated_at"] = now
-        } else {
-            record["updated_at"] = now
-        }
-
-        // Set "created_at" only if it doesn't exist
         if record["created_at"] == nil {
             record["created_at"] = now
         }
+        record["updated_at"] = now
     }
 
-    /// Create a CKAsset from data (with temp file registration)
+    /// Update only the updated_at timestamp.
+    public static func touchTimestamp(_ record: CKRecord) {
+        record["updated_at"] = Date()
+    }
+
+    // MARK: - Asset Helpers
+
+    /// Create a CKAsset from Data with temp file registration for cleanup.
+    @MainActor
     public static func createAsset(from data: Data) throws -> CKAsset {
         let tempDir = FileManager.default.temporaryDirectory
         let fileName = UUID().uuidString
         let fileURL = tempDir.appendingPathComponent(fileName)
 
         try data.write(to: fileURL)
-
-        // Register temp file for cleanup
         CloudKitAssetCleanup.shared.registerTempFile(fileURL)
 
         return CKAsset(fileURL: fileURL)
     }
 
-    /// Create a CKAsset from a URL (with temp file registration)
+    /// Create a CKAsset from a file URL with temp file registration.
+    @MainActor
     public static func createAsset(from url: URL) throws -> CKAsset {
-        // If it's already a temp file, just register it
-        if url.path.contains(FMFileManager.default.temporaryDirectory.path) {
-            CloudKitAssetCleanup.shared.registerTempFile(url)
-            return CKAsset(fileURL: url)
-        }
-
-        // Otherwise, copy to temp directory
         let tempDir = FileManager.default.temporaryDirectory
         let fileName = UUID().uuidString
         let tempURL = tempDir.appendingPathComponent(fileName)
 
         try FileManager.default.copyItem(at: url, to: tempURL)
-
-        // Register temp file for cleanup
         CloudKitAssetCleanup.shared.registerTempFile(tempURL)
 
         return CKAsset(fileURL: tempURL)
     }
 
-    /// Extract data from a CKAsset
+    /// Extract Data from a CKAsset.
     public static func data(from asset: CKAsset) throws -> Data {
-        return try Data(contentsOf: asset.fileURL)
+        guard let fileURL = asset.fileURL else {
+            throw CloudKitRecordFactoryError.invalidAssetURL
+        }
+        return try Data(contentsOf: fileURL)
+    }
+
+    // MARK: - Codable Helpers
+
+    /// Encode a Codable object to Data and store as a CKAsset field.
+    @MainActor
+    public static func encodeToAsset<T: Encodable>(_ value: T, field: String, record: CKRecord) throws {
+        let data = try JSONEncoder().encode(value)
+        let asset = try createAsset(from: data)
+        record[field] = asset
+    }
+
+    /// Decode a Codable object from a CKAsset field.
+    public static func decodeFromAsset<T: Decodable>(_ type: T.Type, field: String, record: CKRecord) -> T? {
+        guard let asset = record[field] as? CKAsset else { return nil }
+        guard let data = try? data(from: asset) else { return nil }
+        return try? JSONDecoder().decode(type, from: data)
+    }
+
+    /// Store a Codable value as a JSON string field.
+    public static func encodeToString<T: Encodable>(_ value: T, field: String, record: CKRecord) throws {
+        let data = try JSONEncoder().encode(value)
+        let string = String(data: data, encoding: .utf8)
+        record[field] = string
+    }
+
+    /// Decode a Codable value from a JSON string field.
+    public static func decodeFromString<T: Decodable>(_ type: T.Type, field: String, record: CKRecord) -> T? {
+        guard let string = record[field] as? String,
+              let data = string.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(type, from: data)
     }
 }
 
-// MARK: - FMFileManager Fix
+// MARK: - Errors
 
-private class FMFileManager {
-    static let `default` = FileManager()
+public enum CloudKitRecordFactoryError: LocalizedError {
+    case invalidAssetURL
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidAssetURL:
+            return "CKAsset has no valid file URL."
+        }
+    }
 }

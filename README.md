@@ -4,80 +4,41 @@ Generic CloudKit integration package for iOS apps. Provides a clean, type-safe i
 
 ## Features
 
-- ✅ **Easy Integration**: Single package, minimal setup
-- ✅ **Conflict Resolution**: Automatic Last-Write-Wins + Merge strategy
-- ✅ **Change Tracking**: Efficient sync using CKServerChangeToken
-- ✅ **Asset Management**: Automatic temp file cleanup
-- ✅ **Type-Safe**: Swift native types throughout
-- ✅ **iOS 17+ Support**: Modern async/await APIs
+- Easy Integration: Single package, minimal setup
+- Conflict Resolution: Automatic Last-Write-Wins + Merge strategy
+- Change Tracking: Efficient sync using CKServerChangeToken
+- Asset Management: Automatic temp file cleanup for CKAsset
+- Codable Helpers: Encode/decode models to/from CKRecord fields
+- Offline Graceful: Works without iCloud account (local-first)
+- iOS 17+ Support: Modern async/await APIs throughout
 
 ## Installation
 
-### Swift Package Manager
+### Swift Package Manager (XcodeGen project.yml)
 
-**project.yml:**
 ```yaml
 packages:
   SwiftCloudKit:
-    url: https://github.com/umituz/SwiftCloudKit.git
-    from: 1.0.0
+    path: ../_packages/SwiftCloudKit
 
 targets:
   YourApp:
     dependencies:
       - package: SwiftCloudKit
-        product: SwiftCloudKit
 ```
 
-**Xcode:**
-1. File → Add Package Dependencies
-2. URL: `https://github.com/umituz/SwiftCloudKit.git`
-3. Add `SwiftCloudKit` product
+### Swift Package Manager (remote)
+
+```yaml
+packages:
+  SwiftCloudKit:
+    url: https://github.com/umituz/SwiftCloudKit
+    from: 1.0.0
+```
 
 ## Quick Start
 
-### 1. Configure CloudKit
-
-```swift
-import SwiftCloudKit
-
-// In your App init or onAppear
-Task {
-    let config = CloudKitManager.Configuration(
-        containerIdentifier: "iCloud.com.yourcompany.yourapp",
-        zoneName: "AppData",
-        subscriptionID: "yourapp-database-changes"
-    )
-    try await CloudKitManager.shared.configure()
-}
-```
-
-### 2. Set up AppDelegate
-
-```swift
-// AppDelegate.swift
-import SwiftCloudKit
-import CloudKit
-import UIKit
-
-final class AppDelegate: NSObject, UIApplicationDelegate {
-    func application(_ application: UIApplication,
-                     didReceiveRemoteNotification userInfo: [AnyHashable: Any],
-                     fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
-        let notification = CKNotification(fromRemoteNotificationDictionary: userInfo as! [String: NSObject])
-        if notification.subscriptionID == "yourapp-database-changes" {
-            Task { @MainActor in
-                await CloudKitSyncCoordinator.shared.fetchRemoteChanges()
-                completionHandler(.newData)
-            }
-        } else {
-            completionHandler(.noData)
-        }
-    }
-}
-```
-
-### 3. Add to your main App
+### 1. Configure CloudKit in your App
 
 ```swift
 import SwiftUI
@@ -100,90 +61,65 @@ struct YourApp: App {
     }
 
     private func configureCloudKit() async {
-        do {
-            let config = CloudKitManager.Configuration(
-                containerIdentifier: "iCloud.com.yourcompany.yourapp",
-                zoneName: "AppData",
-                subscriptionID: "yourapp-database-changes"
-            )
-            try await CloudKitManager.shared.configure()
+        let config = CloudKitManager.Configuration(
+            containerIdentifier: "iCloud.com.umituz.yourapp",
+            zoneName: "YourAppData",
+            subscriptionID: "yourapp-database-changes"
+        )
+
+        // configureIfPossible won't crash if iCloud is unavailable
+        let success = await CloudKitManager.shared.configureIfPossible(with: config)
+
+        if success {
             UIApplication.shared.registerForRemoteNotifications()
             await CloudKitSyncCoordinator.shared.fetchRemoteChanges()
-        } catch {
-            print("CloudKit error: \(error)")
         }
     }
 }
 ```
 
-## Usage
-
-### Save Records
+### 2. Set up AppDelegate for Push Notifications
 
 ```swift
-let record = CloudKitRecordFactory.createUserProfile()
-record["name"] = "John Doe"
-record["email"] = "john@example.com"
-CloudKitRecordFactory.updateTimestamps(record)
+import SwiftCloudKit
+import CloudKit
+import UIKit
 
-try await CloudKitSyncCoordinator.shared.saveRecord(record)
-```
-
-### Query Records
-
-```swift
-let records = try await CloudKitSyncCoordinator.shared.queryRecords(
-    recordType: "UserProfile",
-    sortDescriptors: [NSSortDescriptor(key: "created_at", ascending: false)]
-)
-```
-
-### Fetch Remote Changes
-
-```swift
-// Automatically called on app active and push notifications
-await CloudKitSyncCoordinator.shared.fetchRemoteChanges()
-```
-
-### Handle Changes
-
-```swift
-CloudKitSyncCoordinator.shared.registerRecordHandler(
-    recordType: "UserProfile",
-    onUpdate: { record in
-        // Handle updated record
-        let name = record["name"] as? String ?? ""
-        print("Updated: \(name)")
-    },
-    onDelete: { recordID in
-        // Handle deleted record
-        print("Deleted: \(recordID.recordName)")
+final class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication,
+                     didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+                     fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
+        let notification = CKNotification(fromRemoteNotificationDictionary: userInfo as! [String: NSObject])
+        if notification.subscriptionID == "yourapp-database-changes" {
+            Task { @MainActor in
+                await CloudKitSyncCoordinator.shared.fetchRemoteChanges()
+                completionHandler(.newData)
+            }
+        } else {
+            completionHandler(.noData)
+        }
     }
-)
+}
 ```
 
-## Entitlements
-
-Add to your `.entitlements` file:
+### 3. Add Entitlements
 
 ```xml
 <key>com.apple.developer.icloud-container-identifiers</key>
 <array>
-    <string>iCloud.com.yourcompany.yourapp</string>
+    <string>iCloud.com.umituz.yourapp</string>
 </array>
 <key>com.apple.developer.icloud-services</key>
 <array>
     <string>CloudKit</string>
 </array>
 <key>com.apple.developer.ubiquity-kvstore-identifier</key>
-<string>$(TeamIdentifierPrefix)com.yourcompany.yourapp</string>
+<string>$(TeamIdentifierPrefix)com.umituz.yourapp</string>
 <key>aps-environment</key>
 <string>production</string>
 ```
 
-## Info.plist
-
-Add to `Info.plist`:
+### 4. Add UIBackgroundModes to Info.plist
 
 ```xml
 <key>UIBackgroundModes</key>
@@ -192,50 +128,173 @@ Add to `Info.plist`:
 </array>
 ```
 
+## API Reference
+
+### CloudKitManager
+
+Container lifecycle, zones, subscriptions, account monitoring.
+
+```swift
+// Configure (throws on failure)
+try await CloudKitManager.shared.configure(with: config)
+
+// Configure gracefully (returns false if iCloud unavailable)
+let success = await CloudKitManager.shared.configureIfPossible(with: config)
+
+// Check availability
+CloudKitManager.shared.isCloudAvailable
+CloudKitManager.shared.isConfigured
+CloudKitManager.shared.accountStatus
+```
+
+### CloudKitSyncCoordinator
+
+Conflict resolution, remote fetching, CRUD operations.
+
+```swift
+// Register handlers for remote changes
+CloudKitSyncCoordinator.shared.registerRecordHandler(
+    recordType: "UserProfile",
+    namePrefix: "userprofile",
+    onUpdate: { record in /* handle update */ },
+    onDelete: { recordID in /* handle deletion */ }
+)
+
+// Save with conflict resolution
+try await CloudKitSyncCoordinator.shared.saveRecord(record)
+
+// Delete
+try await CloudKitSyncCoordinator.shared.deleteRecord(recordID)
+
+// Fetch single record
+let record = try await CloudKitSyncCoordinator.shared.fetchRecord(recordID: id)
+
+// Query
+let records = try await CloudKitSyncCoordinator.shared.queryRecords(
+    recordType: "UserProfile",
+    sortDescriptors: [NSSortDescriptor(key: "updated_at", ascending: false)]
+)
+
+// Batch save
+try await CloudKitSyncCoordinator.shared.batchSaveRecords(records)
+
+// Batch delete
+try await CloudKitSyncCoordinator.shared.batchDeleteRecords(recordIDs)
+
+// Fetch remote changes (call on app active + push notification)
+await CloudKitSyncCoordinator.shared.fetchRemoteChanges()
+
+// Observe sync state
+CloudKitSyncCoordinator.shared.isSyncing
+CloudKitSyncCoordinator.shared.lastSyncDate
+CloudKitSyncCoordinator.shared.lastSyncError
+```
+
+### CloudKitRecordFactory
+
+Record ID generation, timestamps, asset and Codable helpers.
+
+```swift
+// Record IDs
+let id = CloudKitRecordFactory.recordID(type: "UserProfile", identifier: userUUID)
+let singletonID = CloudKitRecordFactory.singletonRecordID(type: "Settings")
+
+// Timestamps
+CloudKitRecordFactory.setTimestamps(record)  // sets created_at + updated_at
+CloudKitRecordFactory.touchTimestamp(record)  // updates only updated_at
+
+// Assets from Data/URL
+let asset = try CloudKitRecordFactory.createAsset(from: imageData)
+let data = try CloudKitRecordFactory.data(from: asset)
+
+// Encode/decode Codable to JSON string field
+try CloudKitRecordFactory.encodeToString(myModel, field: "data", record: record)
+let decoded = CloudKitRecordFactory.decodeFromString(MyModel.self, field: "data", record: record)
+
+// Encode/decode Codable to CKAsset field (for larger data)
+try CloudKitRecordFactory.encodeToAsset(myModel, field: "data", record: record)
+let decoded = CloudKitRecordFactory.decodeFromAsset(MyModel.self, field: "data", record: record)
+```
+
+### CloudKitLocalStore
+
+Change token persistence and record caching.
+
+```swift
+// Change token (automatically managed)
+CloudKitLocalStore.shared.serverChangeToken
+
+// Record cache
+CloudKitLocalStore.shared.cacheRecord(record)
+let cached = CloudKitLocalStore.shared.cachedRecord(recordName: "id")
+CloudKitLocalStore.shared.removeCachedRecord(recordName: "id")
+CloudKitLocalStore.shared.clearCache()
+CloudKitLocalStore.shared.cacheSize
+```
+
+### CloudKitAssetCleanup
+
+Temp file lifecycle management for CKAsset.
+
+```swift
+CloudKitAssetCleanup.shared.registerTempFile(url)
+CloudKitAssetCleanup.shared.cleanupTempFiles(for: identifier)
+CloudKitAssetCleanup.shared.cleanup(record: record)
+CloudKitAssetCleanup.shared.cleanupAll()
+```
+
 ## Architecture
 
-### Components
-
-- **CloudKitManager**: Container lifecycle, zones, subscriptions, account monitoring
-- **CloudKitSyncCoordinator**: Conflict resolution, remote fetching, change tracking
-- **CloudKitLocalStore**: Change token persistence, record caching
-- **CloudKitRecordFactory**: Record ID generation, model↔record conversion
-- **CloudKitAssetCleanup**: Temp file lifecycle management
-
-### Data Flow
-
 ```
-Domain Services
-    ↓
-CloudKitSyncCoordinator (conflict resolution)
-    ↓
-CloudKitManager (container, zone, subscription)
-    ↓
-CKDatabase (privateDB)
+Domain Services (app-specific CRUD)
+         |
+CloudKitSyncCoordinator (conflict resolution, remote changes)
+         |
+CloudKitManager (container, zone, subscription, account)
+         |
+   CKDatabase (privateDB)
 ```
 
-## CloudKit Dashboard Setup
+| Component | Responsibility |
+|-----------|---------------|
+| **CloudKitManager** | Container lifecycle, zones, subscriptions, account monitoring |
+| **CloudKitSyncCoordinator** | Conflict resolution, remote fetching, CRUD operations |
+| **CloudKitLocalStore** | Change token persistence, record caching |
+| **CloudKitRecordFactory** | Record ID generation, timestamps, asset/codable helpers |
+| **CloudKitAssetCleanup** | Temp file lifecycle management |
 
-1. Go to: https://icloud.developer.apple.com/dashboard
-2. Create container: `iCloud.com.yourcompany.yourapp`
-3. Create record types:
-   - UserProfile
-   - AppData
-   - Settings
+## Per-App Integration
 
-## Testing
+Each app should create:
 
-- Test with two simulators (different iCloud accounts)
-- Test airplane mode scenarios
-- Test conflict resolution
-- Test account changes
+1. **AppRecordFactory** - defines record types and model-to-CKRecord conversions
+2. **AppCloudKitService** - domain-specific CRUD operations
+
+Example:
+
+```swift
+@MainActor
+enum AppRecordFactory {
+    static let recordTypeUserProfile = "UserProfile"
+    static let recordTypePrediction = "Prediction"
+
+    static func toRecord(_ profile: UserProfile) -> CKRecord {
+        let id = CloudKitRecordFactory.recordID(type: recordTypeUserProfile, identifier: profile.id)
+        let record = CKRecord(recordType: recordTypeUserProfile, recordID: id)
+        record["name"] = profile.name
+        record["username"] = profile.username
+        CloudKitRecordFactory.setTimestamps(record)
+        return record
+    }
+
+    static func fromRecord(_ record: CKRecord) -> UserProfile? {
+        guard let name = record["name"] as? String,
+              let username = record["username"] as? String else { return nil }
+        return UserProfile(id: record.recordID.recordName, name: name, username: username)
+    }
+}
+```
 
 ## License
 
 MIT License
-
-## Author
-
-Created for generic CloudKit integration across all projects.
-
-GitHub: https://github.com/umituz/SwiftCloudKit

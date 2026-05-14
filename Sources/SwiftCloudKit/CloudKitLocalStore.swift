@@ -1,15 +1,14 @@
 //
 //  CloudKitLocalStore.swift
-//  Generic CloudKit Local Store
+//  SwiftCloudKit
 //
-//  Created for generic CloudKit integration across all projects
-//  Reference: CLOUDKIT_STRUCTURE_FOR_OTHER_PROJECTS.md
+//  Handles change token persistence and record caching.
 //
 
 import CloudKit
 import Foundation
 
-/// CloudKit local store - handles change token persistence and record caching
+/// CloudKit local store - handles change token persistence and record caching.
 public final class CloudKitLocalStore {
 
     // MARK: - Singleton
@@ -21,7 +20,7 @@ public final class CloudKitLocalStore {
     private let userDefaults: UserDefaults
     private let fileManager: FileManager
 
-    private let changeTokenKey = "CloudKitServerChangeToken"
+    private let changeTokenKey = "SwiftCloudKit_ServerChangeToken"
     private let cacheDirectory: URL
 
     // MARK: - Initialization
@@ -30,28 +29,24 @@ public final class CloudKitLocalStore {
         self.userDefaults = .standard
         self.fileManager = .default
 
-        // Setup cache directory
         let cachesURL = fileManager.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        self.cacheDirectory = cachesURL.appendingPathComponent("CloudKitRecordCache")
+        self.cacheDirectory = cachesURL.appendingPathComponent("SwiftCloudKit_RecordCache")
 
-        // Create cache directory if it doesn't exist
         try? fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
     }
 
     // MARK: - Change Token Persistence
 
-    /// Persist server change token using NSKeyedArchiver
+    /// Persist and retrieve the server change token for incremental fetches.
     public var serverChangeToken: CKServerChangeToken? {
         get {
             guard let data = userDefaults.data(forKey: changeTokenKey) else {
                 return nil
             }
-
             do {
                 return try NSKeyedUnarchiver.unarchivedObject(ofClass: CKServerChangeToken.self, from: data)
             } catch {
-                // Token could not be unarchived - might be from a different OS version
-                // Delete the stale token
+                // Stale token from a different OS version - delete it
                 userDefaults.removeObject(forKey: changeTokenKey)
                 return nil
             }
@@ -62,7 +57,7 @@ public final class CloudKitLocalStore {
                     let data = try NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true)
                     userDefaults.set(data, forKey: changeTokenKey)
                 } catch {
-                    print("Failed to archive change token: \(error)")
+                    print("[SwiftCloudKit] Failed to archive change token: \(error)")
                 }
             } else {
                 userDefaults.removeObject(forKey: changeTokenKey)
@@ -72,23 +67,23 @@ public final class CloudKitLocalStore {
 
     // MARK: - Record Cache
 
-    /// Cache a CKRecord to local storage
+    /// Cache a CKRecord to local file storage.
     public func cacheRecord(_ record: CKRecord) {
         let fileName = record.recordID.recordName.replacingOccurrences(of: "/", with: "_")
-        let fileURL = cacheDirectory.appendingPathComponent("\(fileName).archive")
+        let fileURL = cacheDirectory.appendingPathComponent("\(fileName).cache")
 
         do {
             let data = try NSKeyedArchiver.archivedData(withRootObject: record, requiringSecureCoding: true)
             try data.write(to: fileURL)
         } catch {
-            print("Failed to cache record: \(error)")
+            print("[SwiftCloudKit] Failed to cache record: \(error)")
         }
     }
 
-    /// Retrieve a cached CKRecord
+    /// Retrieve a cached CKRecord by record name.
     public func cachedRecord(recordName: String) -> CKRecord? {
         let fileName = recordName.replacingOccurrences(of: "/", with: "_")
-        let fileURL = cacheDirectory.appendingPathComponent("\(fileName).archive")
+        let fileURL = cacheDirectory.appendingPathComponent("\(fileName).cache")
 
         guard fileManager.fileExists(atPath: fileURL.path) else {
             return nil
@@ -98,21 +93,20 @@ public final class CloudKitLocalStore {
             let data = try Data(contentsOf: fileURL)
             return try NSKeyedUnarchiver.unarchivedObject(ofClass: CKRecord.self, from: data)
         } catch {
-            // Cache read failed - delete stale cache
+            // Stale cache - delete and return nil
             try? fileManager.removeItem(at: fileURL)
             return nil
         }
     }
 
-    /// Remove a cached record
+    /// Remove a cached record by record name.
     public func removeCachedRecord(recordName: String) {
         let fileName = recordName.replacingOccurrences(of: "/", with: "_")
-        let fileURL = cacheDirectory.appendingPathComponent("\(fileName).archive")
-
+        let fileURL = cacheDirectory.appendingPathComponent("\(fileName).cache")
         try? fileManager.removeItem(at: fileURL)
     }
 
-    /// Clear all cached records
+    /// Clear all cached records.
     public func clearCache() {
         try? fileManager.removeItem(at: cacheDirectory)
         try? fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
@@ -120,7 +114,7 @@ public final class CloudKitLocalStore {
 
     // MARK: - Utility
 
-    /// Get cache size in bytes
+    /// Total cache size in bytes.
     public var cacheSize: Int64 {
         guard let enumerator = fileManager.enumerator(at: cacheDirectory, includingPropertiesForKeys: [.fileSizeKey]) else {
             return 0
@@ -133,16 +127,6 @@ public final class CloudKitLocalStore {
                 totalSize += Int64(fileSize)
             }
         }
-
         return totalSize
-    }
-
-    /// Get cache size formatted as string
-    public var cacheSizeFormatted: String {
-        let bytes = cacheSize
-        let formatter = ByteCountFormatter()
-        formatter.allowedUnits = [.useKB, .useMB, .useGB]
-        formatter.countStyle = .file
-        return formatter.string(fromByteCount: bytes)
     }
 }
