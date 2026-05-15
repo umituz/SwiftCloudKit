@@ -43,7 +43,7 @@ targets:
 packages:
   SwiftCloudKit:
     url: https://github.com/umituz/SwiftCloudKit
-    from: 1.0.1
+    from: 1.0.2
 ```
 
 ## Quick Start — iOS
