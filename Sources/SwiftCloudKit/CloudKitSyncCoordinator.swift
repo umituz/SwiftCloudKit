@@ -2,13 +2,23 @@
 //  CloudKitSyncCoordinator.swift
 //  SwiftCloudKit
 //
-//  Handles conflict resolution, remote change fetching, and batch operations.
+//  Handles save, delete, remote changes, and conflict resolution with retry logic.
 //
 
 import CloudKit
 import Foundation
+import os.log
 
-/// CloudKit sync coordinator - handles conflict resolution, remote fetching, and change tracking.
+/// Describes sync events for observer callbacks.
+public enum SyncEvent {
+    case syncStarted
+    case syncCompleted(recordCount: Int, deleteCount: Int)
+    case syncFailed(error: Error)
+    case recordSaved(recordName: String)
+    case recordDeleted(recordName: String)
+}
+
+/// CloudKit sync coordinator — handles sync operations with conflict resolution and retry.
 @MainActor
 public final class CloudKitSyncCoordinator: ObservableObject {
 
@@ -16,307 +26,299 @@ public final class CloudKitSyncCoordinator: ObservableObject {
 
     public static let shared = CloudKitSyncCoordinator()
 
-    // MARK: - Properties
+    // MARK: - Configuration
+
+    public var maxRetryCount: Int = 3
+    public var retryBaseDelay: TimeInterval = 1.0
+
+    // MARK: - State
 
     @Published public private(set) var isSyncing = false
     @Published public private(set) var lastSyncError: Error?
     @Published public private(set) var lastSyncDate: Date?
 
-    private let cloudKit = CloudKitManager.shared
-    private let localStore = CloudKitLocalStore.shared
+    let manager = CloudKitManager.shared
+    let localStore = CloudKitLocalStore.shared
+    let logger = Logger(subsystem: "SwiftCloudKit", category: "Sync")
 
-    // Record handlers keyed by record type
-    private var recordHandlers: [String: (CKRecord) -> Void] = [:]
-    private var deleteHandlers: [String: (CKRecord.ID) -> Void] = [:]
-    // Maps record name prefix → record type for reliable delete dispatch
-    private var deletePrefixMap: [String: String] = [:]
+    var recordHandlers: [String: (CKRecord) -> Void] = [:]
+    var deleteHandlers: [String: (CKRecord.ID) -> Void] = [:]
+    var deletePrefixMap: [(prefix: String, recordType: String)] = []
 
-    // MARK: - Initialization
+    public var onSyncEvent: ((SyncEvent) -> Void)?
 
     private init() {}
 
     // MARK: - Handler Registration
 
-    /// Register handler for incoming remote record changes.
-    /// - Parameters:
-    ///   - recordType: The CloudKit record type (e.g. "UserProfile", "Prediction")
-    ///   - namePrefix: The prefix used in record IDs for this type (e.g. "userprofile", "prediction")
-    ///   - onUpdate: Called when a record of this type is modified remotely
-    ///   - onDelete: Called when a record of this type is deleted remotely
     public func registerRecordHandler(
         recordType: String,
         namePrefix: String? = nil,
         onUpdate: @escaping (CKRecord) -> Void,
         onDelete: @escaping (CKRecord.ID) -> Void
     ) {
+        let prefix = namePrefix ?? recordType.lowercased()
+        deletePrefixMap.removeAll { $0.recordType == recordType }
+
         recordHandlers[recordType] = onUpdate
         deleteHandlers[recordType] = onDelete
-        // Use explicit prefix or lowercase of record type
-        deletePrefixMap[namePrefix ?? recordType.lowercased()] = recordType
+        deletePrefixMap.append((prefix: prefix, recordType: recordType))
+        deletePrefixMap.sort { $0.prefix.count > $1.prefix.count }
     }
 
-    // MARK: - Save / Update / Delete
+    // MARK: - Save
 
-    /// Save a record with conflict resolution (handles both create and update).
     public func saveRecord(_ record: CKRecord) async throws {
-        guard cloudKit.isCloudAvailable else { return }
-
-        isSyncing = true
-        lastSyncError = nil
-        defer { isSyncing = false }
+        guard manager.isCloudAvailable else { throw CloudKitError.notConfigured }
+        beginSync()
 
         do {
-            _ = try await cloudKit.privateDB.save(record)
+            let database = try manager.privateDB
+            _ = try await database.save(record)
             localStore.cacheRecord(record)
-            lastSyncDate = Date()
-        } catch let error as CKError where error.code == .serverRecordChanged {
-            guard let serverRecord = error.serverRecord else {
-                lastSyncError = error
-                throw error
-            }
-            try await resolveConflictAndSave(localRecord: record, serverRecord: serverRecord)
-        } catch let error as CKError where error.code == .unknownItem {
-            // Record was deleted on server - nothing to do
+            endSync(recordName: record.recordID.recordName)
+        } catch let error as CKError {
+            try await handleSaveError(error, record: record)
         } catch {
-            lastSyncError = error
+            failSync(error)
             throw error
         }
     }
 
-    /// Delete a record by ID.
+    // MARK: - Delete
+
     public func deleteRecord(_ recordID: CKRecord.ID) async throws {
-        guard cloudKit.isCloudAvailable else { return }
-
-        isSyncing = true
-        lastSyncError = nil
-        defer { isSyncing = false }
+        guard manager.isCloudAvailable else { throw CloudKitError.notConfigured }
+        beginSync()
 
         do {
-            _ = try await cloudKit.privateDB.deleteRecord(withID: recordID)
+            let database = try manager.privateDB
+            _ = try await database.deleteRecord(withID: recordID)
             localStore.removeCachedRecord(recordName: recordID.recordName)
             lastSyncDate = Date()
+            isSyncing = false
+            onSyncEvent?(.recordDeleted(recordName: recordID.recordName))
         } catch let error as CKError where error.code == .unknownItem {
-            // Already deleted - clean local cache
             localStore.removeCachedRecord(recordName: recordID.recordName)
+            isSyncing = false
+        } catch let error as CKError where retryPolicy.isRetryable(error) {
+            try await retryPolicy.executeWithRetry { [self] in
+                let database = try manager.privateDB
+                _ = try await database.deleteRecord(withID: recordID)
+                localStore.removeCachedRecord(recordName: recordID.recordName)
+                lastSyncDate = Date()
+                onSyncEvent?(.recordDeleted(recordName: recordID.recordName))
+            }
+            isSyncing = false
         } catch {
-            lastSyncError = error
+            failSync(error)
             throw error
         }
     }
 
-    // MARK: - Fetch
+    // MARK: - Remote Changes
 
-    /// Fetch a single record by its ID.
-    public func fetchRecord(recordID: CKRecord.ID) async throws -> CKRecord {
-        guard cloudKit.isCloudAvailable else {
-            throw CloudKitError.notConfigured
-        }
-
-        isSyncing = true
-        lastSyncError = nil
-        defer { isSyncing = false }
-
-        do {
-            let record = try await cloudKit.privateDB.record(for: recordID)
-            localStore.cacheRecord(record)
-            lastSyncDate = Date()
-            return record
-        } catch {
-            lastSyncError = error
-            throw error
-        }
-    }
-
-    // MARK: - Remote Change Fetching
-
-    /// Fetch remote changes using CKFetchRecordZoneChangesOperation with change token tracking.
     public func fetchRemoteChanges() async {
-        guard cloudKit.isCloudAvailable, !isSyncing else { return }
+        await fetchRemoteChanges(depth: 0)
+    }
 
-        isSyncing = true
-        lastSyncError = nil
-        defer { isSyncing = false }
+    func fetchRemoteChanges(depth: Int) async {
+        let maxDepth = 2
+        guard manager.isCloudAvailable, !isSyncing else { return }
+        beginSync()
+        onSyncEvent?(.syncStarted)
 
         do {
-            let previousToken = localStore.serverChangeToken
-            var modifiedRecords: [CKRecord] = []
-            var deletedRecordIDs: [CKRecord.ID] = []
-            var newToken: CKServerChangeToken?
+            let database = try manager.privateDB
+            let zone = try manager.zoneID
 
-            let zoneConfig = CKFetchRecordZoneChangesOperation.ZoneConfiguration()
-            zoneConfig.previousServerChangeToken = previousToken
-
-            let fetchOperation = CKFetchRecordZoneChangesOperation(
-                recordZoneIDs: [cloudKit.zoneID],
-                configurationsByRecordZoneID: [cloudKit.zoneID: zoneConfig]
+            let fetchResult = try await performZoneFetch(
+                database: database,
+                zone: zone,
+                previousToken: localStore.serverChangeToken
             )
-            fetchOperation.fetchAllChanges = true
 
-            fetchOperation.recordWasChangedBlock = { _, result in
-                if let record = try? result.get() {
-                    modifiedRecords.append(record)
-                }
-            }
-
-            fetchOperation.recordWithIDWasDeletedBlock = { recordID, _ in
-                deletedRecordIDs.append(recordID)
-            }
-
-            fetchOperation.recordZoneFetchResultBlock = { _, result in
-                if let zoneResult = try? result.get() {
-                    newToken = zoneResult.serverChangeToken
-                }
-            }
-
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                fetchOperation.fetchRecordZoneChangesResultBlock = { result in
-                    switch result {
-                    case .success:
-                        continuation.resume()
-                    case .failure(let error):
-                        continuation.resume(throwing: error)
-                    }
-                }
-                cloudKit.privateDB.add(fetchOperation)
-            }
-
-            // Process modified records
-            for record in modifiedRecords {
-                if let handler = recordHandlers[record.recordType] {
-                    handler(record)
-                }
-                localStore.cacheRecord(record)
-            }
-
-            // Process deleted records - use prefix map for reliable type matching
-            for recordID in deletedRecordIDs {
-                let recordName = recordID.recordName
-                for (prefix, recordType) in deletePrefixMap {
-                    if recordName.hasPrefix(prefix + "_") {
-                        deleteHandlers[recordType]?(recordID)
-                    }
-                }
-                localStore.removeCachedRecord(recordName: recordName)
-            }
-
-            // Persist change token
-            if let newToken = newToken {
-                localStore.serverChangeToken = newToken
-            }
+            processFetchedRecords(fetchResult)
 
             lastSyncDate = Date()
+            isSyncing = false
+            onSyncEvent?(.syncCompleted(
+                recordCount: fetchResult.modifiedRecords.count,
+                deleteCount: fetchResult.deletedRecordIDs.count
+            ))
+            let modCount = fetchResult.modifiedRecords.count
+            let delCount = fetchResult.deletedRecordIDs.count
+            logger.info("Fetched \(modCount) modified, \(delCount) deleted")
         } catch let error as CKError where error.code == .changeTokenExpired {
-            // Token expired - reset and re-fetch
-            localStore.serverChangeToken = nil
-            await fetchRemoteChanges()
-        } catch {
-            lastSyncError = error
-        }
-    }
-
-    // MARK: - Query
-
-    /// Query records by type with optional predicate and sort descriptors.
-    public func queryRecords(
-        recordType: String,
-        predicate: NSPredicate = NSPredicate(value: true),
-        sortDescriptors: [NSSortDescriptor]? = nil
-    ) async throws -> [CKRecord] {
-        guard cloudKit.isCloudAvailable else {
-            throw CloudKitError.notConfigured
-        }
-
-        isSyncing = true
-        lastSyncError = nil
-        defer { isSyncing = false }
-
-        let query = CKQuery(recordType: recordType, predicate: predicate)
-        query.sortDescriptors = sortDescriptors
-
-        do {
-            let (matchResults, _) = try await cloudKit.privateDB.records(matching: query)
-            let records = matchResults.compactMap { _, result in
-                try? result.get()
+            isSyncing = false
+            guard depth < maxDepth else {
+                lastSyncError = CloudKitError.syncFailed("Token expired repeatedly")
+                logger.error("Token expired \(depth + 1) times")
+                return
             }
-            lastSyncDate = Date()
-            return records
+            logger.warning("Token expired, re-fetching (attempt \(depth + 1))")
+            localStore.serverChangeToken = nil
+            await fetchRemoteChanges(depth: depth + 1)
         } catch {
-            lastSyncError = error
-            throw error
+            failSync(error)
+            onSyncEvent?(.syncFailed(error: error))
         }
     }
 
-    // MARK: - Batch Operations
-
-    /// Batch save records in chunks of 400 (CK limit per operation).
-    public func batchSaveRecords(_ records: [CKRecord]) async throws {
-        guard cloudKit.isCloudAvailable else { return }
-        guard !records.isEmpty else { return }
-
-        isSyncing = true
-        lastSyncError = nil
-        defer { isSyncing = false }
-
-        let chunkSize = 400
-        let chunks = stride(from: 0, to: records.count, by: chunkSize).map {
-            Array(records[$0..<min($0 + chunkSize, records.count)])
+    func dispatchDeletedRecord(_ recordID: CKRecord.ID) {
+        let name = recordID.recordName
+        for entry in deletePrefixMap where name.hasPrefix(entry.prefix + "_") {
+            deleteHandlers[entry.recordType]?(recordID)
+            break
         }
-
-        for chunk in chunks {
-            _ = try await cloudKit.privateDB.modifyRecords(saving: chunk, deleting: [])
-        }
-
-        lastSyncDate = Date()
-    }
-
-    /// Batch delete records by IDs in chunks of 400.
-    public func batchDeleteRecords(_ recordIDs: [CKRecord.ID]) async throws {
-        guard cloudKit.isCloudAvailable else { return }
-        guard !recordIDs.isEmpty else { return }
-
-        isSyncing = true
-        lastSyncError = nil
-        defer { isSyncing = false }
-
-        let chunkSize = 400
-        let chunks = stride(from: 0, to: recordIDs.count, by: chunkSize).map {
-            Array(recordIDs[$0..<min($0 + chunkSize, recordIDs.count)])
-        }
-
-        for chunk in chunks {
-            _ = try await cloudKit.privateDB.modifyRecords(saving: [], deleting: chunk)
-        }
-
-        // Clean local cache
-        for id in recordIDs {
-            localStore.removeCachedRecord(recordName: id.recordName)
-        }
-
-        lastSyncDate = Date()
     }
 
     // MARK: - Conflict Resolution
 
-    private func resolveConflictAndSave(localRecord: CKRecord, serverRecord: CKRecord) async throws {
-        // Start from server version as base, overlay local changes
-        for key in localRecord.allKeys() {
-            if let localDate = localRecord[key] as? Date,
-               let serverDate = serverRecord[key] as? Date {
-                serverRecord[key] = localDate > serverDate ? localDate : serverDate
-            } else if let localValue = localRecord[key] {
-                serverRecord[key] = localValue
+    private func resolveConflict(local: CKRecord, server: CKRecord) async throws {
+        for key in local.allKeys() {
+            if let localDate = local[key] as? Date,
+               let serverDate = server[key] as? Date {
+                server[key] = localDate > serverDate ? localDate : serverDate
+            } else if let value = local[key] {
+                server[key] = value
             }
         }
+        server["updated_at"] = Date()
 
-        serverRecord["updated_at"] = Date()
+        let database = try manager.privateDB
+        _ = try await database.save(server)
+        localStore.cacheRecord(server)
+        lastSyncDate = Date()
+        logger.info("Conflict resolved for \(local.recordID.recordName)")
+    }
 
-        do {
-            _ = try await cloudKit.privateDB.save(serverRecord)
-            localStore.cacheRecord(serverRecord)
-            lastSyncDate = Date()
-        } catch {
-            lastSyncError = error
+    // MARK: - Sync State Helpers
+
+    func beginSync() {
+        isSyncing = true
+        lastSyncError = nil
+    }
+
+    func endSync(recordName: String) {
+        lastSyncDate = Date()
+        isSyncing = false
+        onSyncEvent?(.recordSaved(recordName: recordName))
+    }
+
+    func failSync(_ error: Error) {
+        lastSyncError = error
+        isSyncing = false
+        logger.error("Sync failed: \(error.localizedDescription)")
+    }
+
+    var retryPolicy: CloudKitSyncRetryPolicy {
+        CloudKitSyncRetryPolicy(
+            maxRetryCount: maxRetryCount,
+            baseDelay: retryBaseDelay
+        )
+    }
+
+    // MARK: - Save Error Handling
+
+    private func handleSaveError(_ error: CKError, record: CKRecord) async throws {
+        if error.code == .serverRecordChanged, let server = error.serverRecord {
+            try await resolveConflict(local: record, server: server)
+            isSyncing = false
+        } else if error.code == .unknownItem {
+            let database = try manager.privateDB
+            _ = try await database.save(record)
+            localStore.cacheRecord(record)
+            endSync(recordName: record.recordID.recordName)
+        } else if retryPolicy.isRetryable(error) {
+            try await retryPolicy.executeWithRetry { [self] in
+                let database = try manager.privateDB
+                _ = try await database.save(record)
+                localStore.cacheRecord(record)
+                lastSyncDate = Date()
+                onSyncEvent?(.recordSaved(recordName: record.recordID.recordName))
+            }
+            isSyncing = false
+        } else {
+            failSync(error)
             throw error
+        }
+    }
+
+    // MARK: - Zone Fetch & Record Processing
+
+    struct ZoneFetchResult {
+        let modifiedRecords: [CKRecord]
+        let deletedRecordIDs: [CKRecord.ID]
+        let changeToken: CKServerChangeToken?
+    }
+
+    private func performZoneFetch(
+        database: CKDatabase,
+        zone: CKRecordZone.ID,
+        previousToken: CKServerChangeToken?
+    ) async throws -> ZoneFetchResult {
+        let config = CKFetchRecordZoneChangesOperation.ZoneConfiguration()
+        config.previousServerChangeToken = previousToken
+
+        let operation = CKFetchRecordZoneChangesOperation(
+            recordZoneIDs: [zone],
+            configurationsByRecordZoneID: [zone: config]
+        )
+        operation.fetchAllChanges = true
+
+        var modified: [CKRecord] = []
+        var deleted: [CKRecord.ID] = []
+        var token: CKServerChangeToken?
+
+        operation.recordWasChangedBlock = { _, result in
+            if let record = try? result.get() { modified.append(record) }
+        }
+        operation.recordWithIDWasDeletedBlock = { recordID, _ in
+            deleted.append(recordID)
+        }
+        operation.recordZoneFetchResultBlock = { _, result in
+            if let zoneResult = try? result.get() { token = zoneResult.serverChangeToken }
+        }
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            operation.fetchRecordZoneChangesResultBlock = { result in
+                switch result {
+                case .success: continuation.resume()
+                case .failure(let err): continuation.resume(throwing: err)
+                }
+            }
+            database.add(operation)
+        }
+
+        return ZoneFetchResult(
+            modifiedRecords: modified,
+            deletedRecordIDs: deleted,
+            changeToken: token
+        )
+    }
+
+    private func processFetchedRecords(_ result: ZoneFetchResult) {
+        for record in result.modifiedRecords {
+            recordHandlers[record.recordType]?(record)
+            localStore.cacheRecord(record)
+        }
+        for recordID in result.deletedRecordIDs {
+            dispatchDeletedRecord(recordID)
+            localStore.removeCachedRecord(recordName: recordID.recordName)
+        }
+        if let token = result.changeToken {
+            localStore.serverChangeToken = token
+        }
+    }
+}
+
+// MARK: - Array Chunking
+
+extension Array {
+    func chunked(into size: Int) -> [[Element]] {
+        stride(from: 0, to: count, by: size).map {
+            Array(self[$0..<Swift.min($0 + size, count)])
         }
     }
 }

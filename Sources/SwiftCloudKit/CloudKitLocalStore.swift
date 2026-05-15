@@ -2,37 +2,48 @@
 //  CloudKitLocalStore.swift
 //  SwiftCloudKit
 //
-//  Handles change token persistence and record caching.
+//  Handles change token persistence and record caching with error reporting.
 //
 
 import CloudKit
 import Foundation
+import os.log
 
-/// CloudKit local store - handles change token persistence and record caching.
+/// CloudKit local store — handles change token persistence and record caching.
+///
+/// Uses the shared singleton by default. For testing, create an instance with a custom `UserDefaults` suite.
 public final class CloudKitLocalStore {
 
     // MARK: - Singleton
 
     public static let shared = CloudKitLocalStore()
 
+    // MARK: - Constants
+
+    private static let changeTokenKey = "SwiftCloudKit_ServerChangeToken"
+    private static let cacheDirectoryName = "SwiftCloudKit_RecordCache"
+    private static let cacheVersionKey = "SwiftCloudKit_CacheVersion"
+    private static let currentCacheVersion = 1
+
     // MARK: - Properties
 
     private let userDefaults: UserDefaults
     private let fileManager: FileManager
-
-    private let changeTokenKey = "SwiftCloudKit_ServerChangeToken"
     private let cacheDirectory: URL
+    private let logger = Logger(subsystem: "SwiftCloudKit", category: "LocalStore")
 
     // MARK: - Initialization
 
-    private init() {
-        self.userDefaults = .standard
-        self.fileManager = .default
+    /// Create with custom UserDefaults and FileManager for testing or isolated storage.
+    public init(userDefaults: UserDefaults = .standard, fileManager: FileManager = .default) {
+        self.userDefaults = userDefaults
+        self.fileManager = fileManager
 
         let cachesURL = fileManager.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        self.cacheDirectory = cachesURL.appendingPathComponent("SwiftCloudKit_RecordCache")
+        self.cacheDirectory = cachesURL.appendingPathComponent(Self.cacheDirectoryName)
 
         try? fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+        validateCacheVersion()
     }
 
     // MARK: - Change Token Persistence
@@ -40,14 +51,14 @@ public final class CloudKitLocalStore {
     /// Persist and retrieve the server change token for incremental fetches.
     public var serverChangeToken: CKServerChangeToken? {
         get {
-            guard let data = userDefaults.data(forKey: changeTokenKey) else {
+            guard let data = userDefaults.data(forKey: Self.changeTokenKey) else {
                 return nil
             }
             do {
                 return try NSKeyedUnarchiver.unarchivedObject(ofClass: CKServerChangeToken.self, from: data)
             } catch {
-                // Stale token from a different OS version - delete it
-                userDefaults.removeObject(forKey: changeTokenKey)
+                logger.warning("Failed to decode change token, resetting: \(error.localizedDescription)")
+                userDefaults.removeObject(forKey: Self.changeTokenKey)
                 return nil
             }
         }
@@ -55,12 +66,12 @@ public final class CloudKitLocalStore {
             if let token = newValue {
                 do {
                     let data = try NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true)
-                    userDefaults.set(data, forKey: changeTokenKey)
+                    userDefaults.set(data, forKey: Self.changeTokenKey)
                 } catch {
-                    print("[SwiftCloudKit] Failed to archive change token: \(error)")
+                    logger.error("Failed to archive change token: \(error.localizedDescription)")
                 }
             } else {
-                userDefaults.removeObject(forKey: changeTokenKey)
+                userDefaults.removeObject(forKey: Self.changeTokenKey)
             }
         }
     }
@@ -68,21 +79,25 @@ public final class CloudKitLocalStore {
     // MARK: - Record Cache
 
     /// Cache a CKRecord to local file storage.
-    public func cacheRecord(_ record: CKRecord) {
-        let fileName = record.recordID.recordName.replacingOccurrences(of: "/", with: "_")
+    /// - Returns: `true` if caching succeeded.
+    @discardableResult
+    public func cacheRecord(_ record: CKRecord) -> Bool {
+        let fileName = sanitizedFileName(record.recordID.recordName)
         let fileURL = cacheDirectory.appendingPathComponent("\(fileName).cache")
 
         do {
             let data = try NSKeyedArchiver.archivedData(withRootObject: record, requiringSecureCoding: true)
             try data.write(to: fileURL)
+            return true
         } catch {
-            print("[SwiftCloudKit] Failed to cache record: \(error)")
+            logger.error("Failed to cache record \(record.recordID.recordName): \(error.localizedDescription)")
+            return false
         }
     }
 
     /// Retrieve a cached CKRecord by record name.
     public func cachedRecord(recordName: String) -> CKRecord? {
-        let fileName = recordName.replacingOccurrences(of: "/", with: "_")
+        let fileName = sanitizedFileName(recordName)
         let fileURL = cacheDirectory.appendingPathComponent("\(fileName).cache")
 
         guard fileManager.fileExists(atPath: fileURL.path) else {
@@ -93,7 +108,7 @@ public final class CloudKitLocalStore {
             let data = try Data(contentsOf: fileURL)
             return try NSKeyedUnarchiver.unarchivedObject(ofClass: CKRecord.self, from: data)
         } catch {
-            // Stale cache - delete and return nil
+            logger.warning("Stale cache for \(recordName), removing: \(error.localizedDescription)")
             try? fileManager.removeItem(at: fileURL)
             return nil
         }
@@ -101,22 +116,34 @@ public final class CloudKitLocalStore {
 
     /// Remove a cached record by record name.
     public func removeCachedRecord(recordName: String) {
-        let fileName = recordName.replacingOccurrences(of: "/", with: "_")
+        let fileName = sanitizedFileName(recordName)
         let fileURL = cacheDirectory.appendingPathComponent("\(fileName).cache")
-        try? fileManager.removeItem(at: fileURL)
+        do {
+            try fileManager.removeItem(at: fileURL)
+        } catch {
+            // File may already be gone — not an error
+        }
     }
 
     /// Clear all cached records.
     public func clearCache() {
-        try? fileManager.removeItem(at: cacheDirectory)
-        try? fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+        do {
+            try fileManager.removeItem(at: cacheDirectory)
+            try fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+            userDefaults.set(Self.currentCacheVersion, forKey: Self.cacheVersionKey)
+        } catch {
+            logger.error("Failed to clear cache: \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Utility
 
     /// Total cache size in bytes.
     public var cacheSize: Int64 {
-        guard let enumerator = fileManager.enumerator(at: cacheDirectory, includingPropertiesForKeys: [.fileSizeKey]) else {
+        guard let enumerator = fileManager.enumerator(
+            at: cacheDirectory,
+            includingPropertiesForKeys: [.fileSizeKey]
+        ) else {
             return 0
         }
 
@@ -128,5 +155,29 @@ public final class CloudKitLocalStore {
             }
         }
         return totalSize
+    }
+
+    /// Number of cached records.
+    public var cachedRecordCount: Int {
+        guard let enumerator = fileManager.enumerator(at: cacheDirectory, includingPropertiesForKeys: nil) else {
+            return 0
+        }
+        return enumerator.compactMap { $0 as? URL }.filter { $0.pathExtension == "cache" }.count
+    }
+
+    // MARK: - Private
+
+    private func sanitizedFileName(_ recordName: String) -> String {
+        recordName
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+    }
+
+    /// Invalidate cache if the schema version changed between app updates.
+    private func validateCacheVersion() {
+        let storedVersion = userDefaults.integer(forKey: Self.cacheVersionKey)
+        if storedVersion != Self.currentCacheVersion {
+            clearCache()
+        }
     }
 }

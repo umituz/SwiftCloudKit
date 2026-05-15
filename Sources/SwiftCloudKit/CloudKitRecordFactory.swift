@@ -8,6 +8,7 @@
 
 import CloudKit
 import Foundation
+import os.log
 
 /// Generic CloudKit record factory utilities.
 /// Provides shared helpers for record creation, ID generation, timestamps, and asset handling.
@@ -18,26 +19,29 @@ public enum CloudKitRecordFactory {
     /// Get the shared zone ID from CloudKitManager.
     @MainActor
     public static var zoneID: CKRecordZone.ID {
-        return CloudKitManager.shared.zoneID
+        get throws {
+            try CloudKitManager.shared.zoneID
+        }
     }
 
     // MARK: - Record ID Generation
 
     /// Generate a record ID with the "type_identifier" naming convention.
     @MainActor
-    public static func recordID(type: String, identifier: String) -> CKRecord.ID {
-        return CKRecord.ID(recordName: "\(type.lowercased())_\(identifier)", zoneID: zoneID)
+    public static func recordID(type: String, identifier: String) throws -> CKRecord.ID {
+        return CKRecord.ID(recordName: "\(type.lowercased())_\(identifier)", zoneID: try zoneID)
     }
 
     /// Generate a singleton record ID (one per user per type).
     @MainActor
-    public static func singletonRecordID(type: String) -> CKRecord.ID {
-        return CKRecord.ID(recordName: "\(type.lowercased())_default", zoneID: zoneID)
+    public static func singletonRecordID(type: String) throws -> CKRecord.ID {
+        return CKRecord.ID(recordName: "\(type.lowercased())_default", zoneID: try zoneID)
     }
 
     // MARK: - Timestamps
 
-    /// Set created_at and updated_at on a record.
+    /// Set `created_at` and `updated_at` on a record.
+    /// Only sets `created_at` if it is not already present.
     public static func setTimestamps(_ record: CKRecord) {
         let now = Date()
         if record["created_at"] == nil {
@@ -46,7 +50,7 @@ public enum CloudKitRecordFactory {
         record["updated_at"] = now
     }
 
-    /// Update only the updated_at timestamp.
+    /// Update only the `updated_at` timestamp.
     public static func touchTimestamp(_ record: CKRecord) {
         record["updated_at"] = Date()
     }
@@ -57,7 +61,7 @@ public enum CloudKitRecordFactory {
     @MainActor
     public static func createAsset(from data: Data) throws -> CKAsset {
         let tempDir = FileManager.default.temporaryDirectory
-        let fileName = UUID().uuidString
+        let fileName = "\(CloudKitAssetCleanup.filePrefix)\(UUID().uuidString)"
         let fileURL = tempDir.appendingPathComponent(fileName)
 
         try data.write(to: fileURL)
@@ -70,7 +74,7 @@ public enum CloudKitRecordFactory {
     @MainActor
     public static func createAsset(from url: URL) throws -> CKAsset {
         let tempDir = FileManager.default.temporaryDirectory
-        let fileName = UUID().uuidString
+        let fileName = "\(CloudKitAssetCleanup.filePrefix)\(UUID().uuidString)"
         let tempURL = tempDir.appendingPathComponent(fileName)
 
         try FileManager.default.copyItem(at: url, to: tempURL)
@@ -98,36 +102,51 @@ public enum CloudKitRecordFactory {
     }
 
     /// Decode a Codable object from a CKAsset field.
+    /// Returns `nil` if the field is missing or contains invalid data.
     public static func decodeFromAsset<T: Decodable>(_ type: T.Type, field: String, record: CKRecord) -> T? {
         guard let asset = record[field] as? CKAsset else { return nil }
-        guard let data = try? data(from: asset) else { return nil }
-        return try? JSONDecoder().decode(type, from: data)
+        do {
+            let data = try data(from: asset)
+            return try JSONDecoder().decode(type, from: data)
+        } catch {
+            return nil
+        }
     }
 
     /// Store a Codable value as a JSON string field.
     public static func encodeToString<T: Encodable>(_ value: T, field: String, record: CKRecord) throws {
         let data = try JSONEncoder().encode(value)
-        let string = String(data: data, encoding: .utf8)
+        guard let string = String(data: data, encoding: .utf8) else {
+            throw CloudKitRecordFactoryError.encodingFailed
+        }
         record[field] = string
     }
 
     /// Decode a Codable value from a JSON string field.
+    /// Returns `nil` if the field is missing or contains invalid data.
     public static func decodeFromString<T: Decodable>(_ type: T.Type, field: String, record: CKRecord) -> T? {
         guard let string = record[field] as? String,
               let data = string.data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode(type, from: data)
+        do {
+            return try JSONDecoder().decode(type, from: data)
+        } catch {
+            return nil
+        }
     }
 }
 
 // MARK: - Errors
 
-public enum CloudKitRecordFactoryError: LocalizedError {
+public enum CloudKitRecordFactoryError: LocalizedError, Sendable {
     case invalidAssetURL
+    case encodingFailed
 
     public var errorDescription: String? {
         switch self {
         case .invalidAssetURL:
             return "CKAsset has no valid file URL."
+        case .encodingFailed:
+            return "Failed to encode value to UTF-8 string."
         }
     }
 }
