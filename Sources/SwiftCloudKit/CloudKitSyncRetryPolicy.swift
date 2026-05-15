@@ -32,19 +32,31 @@ struct CloudKitSyncRetryPolicy {
     }
 
     /// Execute an async operation with exponential backoff retry.
+    /// Throws the last encountered error if all retries are exhausted.
     func executeWithRetry(_ operation: () async throws -> Void) async throws {
+        var lastError: Error?
+
         for attempt in 0..<maxRetryCount {
             do {
                 try await operation()
                 return
-            } catch let error as CKError where isRetryable(error) && attempt < maxRetryCount - 1 {
-                let delay = baseDelay * pow(2.0, Double(attempt))
-                let capped = min(delay, 30.0)
-                logger.warning(
-                    "Retry \(attempt + 1)/\(maxRetryCount) in \(capped)s"
-                )
-                try await Task.sleep(for: .seconds(capped))
+            } catch let error as CKError where isRetryable(error) {
+                lastError = error
+                if attempt < maxRetryCount - 1 {
+                    let delay = baseDelay * pow(2.0, Double(attempt))
+                    let capped = min(delay, 30.0)
+                    logger.warning("Retry \(attempt + 1)/\(maxRetryCount) in \(capped)s")
+                    try await Task.sleep(for: .seconds(capped))
+                }
+            } catch {
+                // Non-retryable error — throw immediately
+                throw error
             }
+        }
+
+        // All retries exhausted — throw the last error
+        if let error = lastError {
+            throw error
         }
     }
 }

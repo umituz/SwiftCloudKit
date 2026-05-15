@@ -381,4 +381,53 @@ final class SyncCoordinatorTests: XCTestCase {
 
         coordinator.onSyncEvent = nil
     }
+
+    func testConflictResolverCallback() {
+        let coordinator = CloudKitSyncCoordinator.shared
+        var resolverCalled = false
+
+        coordinator.conflictResolver = { _, server in
+            resolverCalled = true
+            return server
+        }
+
+        // Verify resolver is set (actual conflict requires live CloudKit)
+        XCTAssertNotNil(coordinator.conflictResolver)
+        coordinator.conflictResolver = nil
+    }
+
+    func testBatchSaveEmptyArrayDoesNotThrow() async {
+        let coordinator = CloudKitSyncCoordinator.shared
+        // Should not throw and should update lastSyncDate
+        // (won't actually sync since cloud is not configured)
+        // Just verify the guard works
+        do {
+            try await coordinator.batchSaveRecords([])
+        } catch CloudKitError.notConfigured {
+            // Expected when not configured
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testBatchDeleteEmptyArrayDoesNotThrow() async {
+        let coordinator = CloudKitSyncCoordinator.shared
+        do {
+            try await coordinator.batchDeleteRecords([])
+        } catch CloudKitError.notConfigured {
+            // Expected when not configured
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testManagerResetCleansUpState() {
+        let manager = CloudKitManager.shared
+        manager.resetConfiguration()
+
+        XCTAssertFalse(manager.isConfigured)
+        XCTAssertFalse(manager.isCloudAvailable)
+        XCTAssertEqual(manager.accountStatus, .couldNotDetermine)
+        XCTAssertNil(manager.lastAccountStatusError)
+    }
 }

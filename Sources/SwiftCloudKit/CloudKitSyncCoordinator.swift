@@ -46,7 +46,12 @@ public final class CloudKitSyncCoordinator: ObservableObject {
     var deleteHandlers: [String: (CKRecord.ID) -> Void] = [:]
     var deletePrefixMap: [(prefix: String, recordType: String)] = []
 
+    /// Optional observer for sync lifecycle events.
     public var onSyncEvent: ((SyncEvent) -> Void)?
+
+    /// Optional custom conflict resolver. When set, this is called instead of
+    /// the default merge strategy. Return the resolved CKRecord to save.
+    public var conflictResolver: ((CKRecord, CKRecord) -> CKRecord)?
 
     private init() {}
 
@@ -199,7 +204,10 @@ public final class CloudKitSyncCoordinator: ObservableObject {
     /// Batch save records in chunks of 400 (CloudKit limit per operation).
     public func batchSaveRecords(_ records: [CKRecord]) async throws {
         guard manager.isCloudAvailable else { throw CloudKitError.notConfigured }
-        guard !records.isEmpty else { return }
+        guard !records.isEmpty else {
+            lastSyncDate = Date()
+            return
+        }
         beginSync()
 
         let database = try manager.privateDB
@@ -235,7 +243,10 @@ public final class CloudKitSyncCoordinator: ObservableObject {
     /// Batch delete records by IDs in chunks of 400.
     public func batchDeleteRecords(_ recordIDs: [CKRecord.ID]) async throws {
         guard manager.isCloudAvailable else { throw CloudKitError.notConfigured }
-        guard !recordIDs.isEmpty else { return }
+        guard !recordIDs.isEmpty else {
+            lastSyncDate = Date()
+            return
+        }
         beginSync()
 
         let database = try manager.privateDB
@@ -315,6 +326,24 @@ public final class CloudKitSyncCoordinator: ObservableObject {
     // MARK: - Conflict Resolution
 
     private func resolveConflict(local: CKRecord, server: CKRecord) async throws {
+        let resolved: CKRecord
+
+        if let resolver = conflictResolver {
+            resolved = resolver(local, server)
+        } else {
+            resolved = defaultMerge(local: local, server: server)
+        }
+
+        resolved["updated_at"] = Date()
+
+        let database = try manager.privateDB
+        _ = try await database.save(resolved)
+        localStore.cacheRecord(resolved)
+        lastSyncDate = Date()
+        logger.info("Conflict resolved for \(local.recordID.recordName)")
+    }
+
+    private func defaultMerge(local: CKRecord, server: CKRecord) -> CKRecord {
         for key in local.allKeys() {
             if let localDate = local[key] as? Date,
                let serverDate = server[key] as? Date {
@@ -323,13 +352,7 @@ public final class CloudKitSyncCoordinator: ObservableObject {
                 server[key] = value
             }
         }
-        server["updated_at"] = Date()
-
-        let database = try manager.privateDB
-        _ = try await database.save(server)
-        localStore.cacheRecord(server)
-        lastSyncDate = Date()
-        logger.info("Conflict resolved for \(local.recordID.recordName)")
+        return server
     }
 
     // MARK: - Sync State Helpers
