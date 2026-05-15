@@ -12,11 +12,11 @@ import os.log
 /// CloudKit local store — handles change token persistence and record caching.
 ///
 /// Uses the shared singleton by default. For testing, create an instance with a custom `UserDefaults` suite.
-public final class CloudKitLocalStore {
+public final class CloudKitLocalStore: @unchecked Sendable {
 
     // MARK: - Singleton
 
-    public static let shared = CloudKitLocalStore()
+    @MainActor public static let shared = CloudKitLocalStore()
 
     // MARK: - Constants
 
