@@ -17,10 +17,7 @@ let package = Package(
         .target(
             name: "SwiftCloudKit",
             dependencies: [],
-            path: "Sources/SwiftCloudKit",
-            swiftSettings: [
-                .unsafeFlags(["-warn-concurrency"])
-            ]
+            path: "Sources/SwiftCloudKit"
         ),
         .testTarget(
             name: "SwiftCloudKitTests",
