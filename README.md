@@ -1,11 +1,18 @@
 # SwiftCloudKit
 
-Generic CloudKit integration package for iOS apps. Provides a clean, type-safe interface to CloudKit with built-in conflict resolution, change tracking, retry logic, and asset management.
+Generic CloudKit integration package for iOS and macOS apps. Provides a clean, type-safe interface to CloudKit with built-in conflict resolution, change tracking, retry logic, and asset management.
+
+## Requirements
+
+- iOS 17+ / macOS 14+
+- Xcode 15+
+- Swift 5.9+
+- Active Apple Developer account with CloudKit enabled
 
 ## Features
 
-- Easy Integration: Single package, minimal setup
-- Conflict Resolution: Automatic Last-Write-Wins + Merge strategy
+- Cross-Platform: iOS 17+ and macOS 14+ with identical API
+- Conflict Resolution: Automatic Last-Write-Wins + Merge, or custom resolver
 - Change Tracking: Efficient sync using CKServerChangeToken
 - Retry Logic: Exponential backoff for transient CloudKit failures
 - Cursor Pagination: Automatic cursor-based query pagination
@@ -14,7 +21,6 @@ Generic CloudKit integration package for iOS apps. Provides a clean, type-safe i
 - Codable Helpers: Encode/decode models to/from CKRecord fields
 - Offline Graceful: Works without iCloud account (local-first)
 - Reset Support: Clean reconfiguration on logout
-- iOS 17+ Support: Modern async/await APIs throughout
 
 ## Installation
 
@@ -40,7 +46,7 @@ packages:
     from: 1.0.1
 ```
 
-## Quick Start
+## Quick Start — iOS
 
 ### 1. Configure CloudKit in your App
 
@@ -71,7 +77,6 @@ struct YourApp: App {
             subscriptionID: "yourapp-database-changes"
         )
 
-        // configureIfPossible won't crash if iCloud is unavailable
         let success = await CloudKitManager.shared.configureIfPossible(with: config)
 
         if success {
@@ -82,7 +87,7 @@ struct YourApp: App {
 }
 ```
 
-### 2. Set up AppDelegate for Push Notifications
+### 2. Set up AppDelegate for Push Notifications (iOS)
 
 ```swift
 import SwiftCloudKit
@@ -110,7 +115,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 }
 ```
 
-### 3. Add Entitlements
+### 3. Add Entitlements (iOS)
 
 ```xml
 <key>com.apple.developer.icloud-container-identifiers</key>
@@ -127,7 +132,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 <string>production</string>
 ```
 
-### 4. Add UIBackgroundModes to Info.plist
+### 4. Add UIBackgroundModes to Info.plist (iOS)
 
 ```xml
 <key>UIBackgroundModes</key>
@@ -135,6 +140,92 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     <string>remote-notification</string>
 </array>
 ```
+
+## Quick Start — macOS
+
+### 1. Configure CloudKit in your App
+
+```swift
+import SwiftUI
+import SwiftCloudKit
+
+@main
+struct YourMacApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+
+    init() {
+        Task { @MainActor in
+            await configureCloudKit()
+        }
+    }
+
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+        }
+    }
+
+    private func configureCloudKit() async {
+        let config = CloudKitManager.Configuration(
+            containerIdentifier: "iCloud.com.umituz.yourapp",
+            zoneName: "YourAppData",
+            subscriptionID: "yourapp-database-changes"
+        )
+
+        let success = await CloudKitManager.shared.configureIfPossible(with: config)
+
+        if success {
+            NSApplication.shared.registerForRemoteNotifications()
+            await CloudKitSyncCoordinator.shared.fetchRemoteChanges()
+        }
+    }
+}
+```
+
+### 2. Set up AppDelegate for Push Notifications (macOS)
+
+```swift
+import SwiftCloudKit
+import CloudKit
+import AppKit
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func application(
+        _ application: NSApplication,
+        didReceiveRemoteNotification userInfo: [String: Any]
+    ) {
+        guard let notification = CKNotification(fromRemoteNotificationDictionary: userInfo),
+              notification.subscriptionID == "yourapp-database-changes" else {
+            return
+        }
+
+        Task { @MainActor in
+            await CloudKitSyncCoordinator.shared.fetchRemoteChanges()
+        }
+    }
+}
+```
+
+### 3. Add Entitlements (macOS)
+
+```xml
+<key>com.apple.developer.icloud-container-identifiers</key>
+<array>
+    <string>iCloud.com.umituz.yourapp</string>
+</array>
+<key>com.apple.developer.icloud-services</key>
+<array>
+    <string>CloudKit</string>
+</array>
+<key>com.apple.developer.ubiquity-kvstore-identifier</key>
+<string>$(TeamIdentifierPrefix)com.umituz.yourapp</string>
+<key>aps-environment</key>
+<string>production</string>
+```
+
+### 4. Enable Push Notifications Capability
+
+In Xcode: Target → Signing & Capabilities → add **Push Notifications**.
 
 ## API Reference
 
@@ -183,6 +274,12 @@ coordinator.onSyncEvent = { event in
     }
 }
 
+// Custom conflict resolver (optional — defaults to last-write-wins + merge)
+coordinator.conflictResolver = { local, server in
+    // Return the resolved CKRecord
+    return server
+}
+
 // Register handlers for remote changes
 coordinator.registerRecordHandler(
     recordType: "UserProfile",
@@ -190,6 +287,10 @@ coordinator.registerRecordHandler(
     onUpdate: { record in /* handle update */ },
     onDelete: { recordID in /* handle deletion */ }
 )
+
+// Unregister handlers (on logout or cleanup)
+coordinator.unregisterRecordHandler(recordType: "UserProfile")
+coordinator.unregisterAllHandlers()
 
 // Save with conflict resolution (throws if cloud unavailable)
 try await coordinator.saveRecord(record)
@@ -227,7 +328,7 @@ coordinator.lastSyncError
 Record ID generation, timestamps, asset and Codable helpers.
 
 ```swift
-// Record IDs (now throws — requires CloudKitManager to be configured)
+// Record IDs (throws — requires CloudKitManager to be configured)
 let id = try CloudKitRecordFactory.recordID(type: "UserProfile", identifier: userUUID)
 let singletonID = try CloudKitRecordFactory.singletonRecordID(type: "Settings")
 
@@ -254,7 +355,7 @@ Change token persistence and record caching.
 
 ```swift
 // Change token (automatically managed)
-CloudKitLocalStore.shared.serverChangeToken
+CloudKitLocalStore.shared.serverChangeTokens
 
 // Record cache
 CloudKitLocalStore.shared.cacheRecord(record)
@@ -290,6 +391,7 @@ do {
     case .notConfigured:  // CloudKit not configured
     case .noAccount:      // No iCloud account
     case .networkFailure: // Network error
+    case .quotaExceeded:  // iCloud storage full
     case .syncFailed(let reason):  // Sync-specific failure
     default: break
     }
@@ -321,8 +423,8 @@ CloudKitManager (container, zone, subscription, account)
 
 Each app should create:
 
-1. **AppRecordFactory** - defines record types and model-to-CKRecord conversions
-2. **AppCloudKitService** - domain-specific CRUD operations
+1. **AppRecordFactory** — defines record types and model-to-CKRecord conversions
+2. **AppCloudKitService** — domain-specific CRUD operations
 
 Example:
 
