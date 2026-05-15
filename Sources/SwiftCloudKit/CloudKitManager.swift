@@ -5,7 +5,7 @@
 //  Configurable CloudKit manager for container lifecycle, zones, subscriptions, and account monitoring.
 //
 
-import CloudKit
+@preconcurrency import CloudKit
 import Foundation
 import os.log
 
@@ -56,7 +56,7 @@ public final class CloudKitManager: ObservableObject {
     @Published public private(set) var lastAccountStatusError: Error?
     @Published public private(set) var isConfigured = false
 
-    private var accountStatusObserver: NSObjectProtocol?
+    private nonisolated(unsafe) var accountStatusObserver: NSObjectProtocol?
 
     private let logger = Logger(subsystem: "SwiftCloudKit", category: "CloudKitManager")
 

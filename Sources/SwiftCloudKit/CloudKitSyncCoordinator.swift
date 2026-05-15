@@ -2,7 +2,8 @@
 //  CloudKitSyncCoordinator.swift
 //  SwiftCloudKit
 //
-//  Handles save, delete, remote changes, and conflict resolution with retry logic.
+//  Handles save, delete, fetch, query, batch operations, remote changes,
+//  and conflict resolution with retry logic.
 //
 
 import CloudKit
@@ -66,6 +67,20 @@ public final class CloudKitSyncCoordinator: ObservableObject {
         deletePrefixMap.sort { $0.prefix.count > $1.prefix.count }
     }
 
+    /// Remove handler for a specific record type.
+    public func unregisterRecordHandler(recordType: String) {
+        recordHandlers.removeValue(forKey: recordType)
+        deleteHandlers.removeValue(forKey: recordType)
+        deletePrefixMap.removeAll { $0.recordType == recordType }
+    }
+
+    /// Remove all registered handlers. Call on logout.
+    public func unregisterAllHandlers() {
+        recordHandlers.removeAll()
+        deleteHandlers.removeAll()
+        deletePrefixMap.removeAll()
+    }
+
     // MARK: - Save
 
     public func saveRecord(_ record: CKRecord) async throws {
@@ -116,6 +131,133 @@ public final class CloudKitSyncCoordinator: ObservableObject {
         }
     }
 
+    // MARK: - Fetch
+
+    /// Fetch a single record by its ID.
+    public func fetchRecord(recordID: CKRecord.ID) async throws -> CKRecord {
+        guard manager.isCloudAvailable else { throw CloudKitError.notConfigured }
+        beginSync()
+
+        do {
+            let database = try manager.privateDB
+            let record = try await database.record(for: recordID)
+            localStore.cacheRecord(record)
+            lastSyncDate = Date()
+            isSyncing = false
+            return record
+        } catch {
+            failSync(error)
+            throw error
+        }
+    }
+
+    // MARK: - Query
+
+    /// Query records by type with optional predicate, sort descriptors, and result limit.
+    /// Supports cursor-based pagination for large result sets.
+    public func queryRecords(
+        recordType: String,
+        predicate: NSPredicate = NSPredicate(value: true),
+        sortDescriptors: [NSSortDescriptor]? = nil,
+        resultsLimit: Int = 100
+    ) async throws -> [CKRecord] {
+        guard manager.isCloudAvailable else { throw CloudKitError.notConfigured }
+        beginSync()
+
+        let query = CKQuery(recordType: recordType, predicate: predicate)
+        query.sortDescriptors = sortDescriptors
+        let database = try manager.privateDB
+
+        var allRecords: [CKRecord] = []
+        let (firstResults, cursor) = try await database.records(
+            matching: query, resultsLimit: resultsLimit
+        )
+        allRecords.append(
+            contentsOf: firstResults.compactMap { _, result in try? result.get() }
+        )
+
+        var nextCursor = cursor
+        while let current = nextCursor {
+            let (page, pageCursor) = try await database.records(
+                continuingMatchFrom: current, resultsLimit: resultsLimit
+            )
+            allRecords.append(
+                contentsOf: page.compactMap { _, result in try? result.get() }
+            )
+            nextCursor = pageCursor
+        }
+
+        for record in allRecords { localStore.cacheRecord(record) }
+        lastSyncDate = Date()
+        isSyncing = false
+        logger.info("Query returned \(allRecords.count) records")
+        return allRecords
+    }
+
+    // MARK: - Batch Save
+
+    /// Batch save records in chunks of 400 (CloudKit limit per operation).
+    public func batchSaveRecords(_ records: [CKRecord]) async throws {
+        guard manager.isCloudAvailable else { throw CloudKitError.notConfigured }
+        guard !records.isEmpty else { return }
+        beginSync()
+
+        let database = try manager.privateDB
+        let chunks = records.chunked(into: 400)
+
+        for (index, chunk) in chunks.enumerated() {
+            do {
+                let (saveResults, _) = try await database.modifyRecords(
+                    saving: chunk, deleting: []
+                )
+                for (_, result) in saveResults {
+                    if let saved = try? result.get() {
+                        localStore.cacheRecord(saved)
+                    }
+                }
+                logger.info("Batch save chunk \(index + 1)/\(chunks.count)")
+            } catch let error as CKError where error.code == .partialFailure {
+                // Some records succeeded — log partial failures and continue
+                if let partials = error.userInfo[CKPartialErrorsByItemIDKey] as? [AnyHashable: Error] {
+                    logger.warning("Batch save chunk \(index + 1): \(partials.count) partial failures")
+                }
+            } catch {
+                failSync(error)
+                throw error
+            }
+        }
+        lastSyncDate = Date()
+        isSyncing = false
+    }
+
+    // MARK: - Batch Delete
+
+    /// Batch delete records by IDs in chunks of 400.
+    public func batchDeleteRecords(_ recordIDs: [CKRecord.ID]) async throws {
+        guard manager.isCloudAvailable else { throw CloudKitError.notConfigured }
+        guard !recordIDs.isEmpty else { return }
+        beginSync()
+
+        let database = try manager.privateDB
+        let chunks = recordIDs.chunked(into: 400)
+
+        for (index, chunk) in chunks.enumerated() {
+            do {
+                _ = try await database.modifyRecords(saving: [], deleting: chunk)
+                logger.info("Batch delete chunk \(index + 1)/\(chunks.count)")
+            } catch {
+                failSync(error)
+                throw error
+            }
+        }
+
+        for id in recordIDs {
+            localStore.removeCachedRecord(recordName: id.recordName)
+        }
+        lastSyncDate = Date()
+        isSyncing = false
+    }
+
     // MARK: - Remote Changes
 
     public func fetchRemoteChanges() async {
@@ -142,12 +284,9 @@ public final class CloudKitSyncCoordinator: ObservableObject {
 
             lastSyncDate = Date()
             isSyncing = false
-            onSyncEvent?(.syncCompleted(
-                recordCount: fetchResult.modifiedRecords.count,
-                deleteCount: fetchResult.deletedRecordIDs.count
-            ))
             let modCount = fetchResult.modifiedRecords.count
             let delCount = fetchResult.deletedRecordIDs.count
+            onSyncEvent?(.syncCompleted(recordCount: modCount, deleteCount: delCount))
             logger.info("Fetched \(modCount) modified, \(delCount) deleted")
         } catch let error as CKError where error.code == .changeTokenExpired {
             isSyncing = false
@@ -230,6 +369,10 @@ public final class CloudKitSyncCoordinator: ObservableObject {
             _ = try await database.save(record)
             localStore.cacheRecord(record)
             endSync(recordName: record.recordID.recordName)
+        } else if error.code == .quotaExceeded {
+            isSyncing = false
+            lastSyncError = CloudKitError.quotaExceeded
+            throw CloudKitError.quotaExceeded
         } else if retryPolicy.isRetryable(error) {
             try await retryPolicy.executeWithRetry { [self] in
                 let database = try manager.privateDB
