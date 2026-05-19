@@ -177,18 +177,18 @@ public final class CloudKitSyncCoordinator: ObservableObject {
         let (firstResults, cursor) = try await database.records(
             matching: query, resultsLimit: resultsLimit
         )
-        allRecords.append(
-            contentsOf: firstResults.compactMap { _, result in try? result.get() }
-        )
+        for (_, result) in firstResults {
+            if case .success(let record) = result { allRecords.append(record) }
+        }
 
         var nextCursor = cursor
         while let current = nextCursor {
             let (page, pageCursor) = try await database.records(
                 continuingMatchFrom: current, resultsLimit: resultsLimit
             )
-            allRecords.append(
-                contentsOf: page.compactMap { _, result in try? result.get() }
-            )
+            for (_, result) in page {
+                if case .success(let record) = result { allRecords.append(record) }
+            }
             nextCursor = pageCursor
         }
 

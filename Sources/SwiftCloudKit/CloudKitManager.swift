@@ -56,7 +56,7 @@ public final class CloudKitManager: ObservableObject {
     @Published public private(set) var lastAccountStatusError: Error?
     @Published public private(set) var isConfigured = false
 
-    private nonisolated(unsafe) var accountStatusObserver: NSObjectProtocol?
+    private var accountStatusObserver: NSObjectProtocol?
 
     private let logger = Logger(subsystem: "SwiftCloudKit", category: "CloudKitManager")
 
@@ -310,13 +310,6 @@ public final class CloudKitManager: ObservableObject {
         logger.info("Created database subscription: \(subID)")
     }
 
-    // MARK: - Deinitialization
-
-    deinit {
-        if let observer = accountStatusObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
-    }
 }
 
 // MARK: - Errors

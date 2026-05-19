@@ -114,40 +114,40 @@ final class RecordFactoryTests: XCTestCase {
         XCTAssertNil(record["created_at"])
     }
 
-    func testEncodeDecodeString() {
+    func testEncodeDecodeString() throws {
         let record = CKRecord(recordType: "TestRecord", recordID: CKRecord.ID(recordName: "test"))
         struct Sample: Codable, Equatable { let name: String; let count: Int }
         let original = Sample(name: "Test", count: 42)
 
         XCTAssertNoThrow(try CloudKitRecordFactory.encodeToString(original, field: "data", record: record))
-        let decoded = CloudKitRecordFactory.decodeFromString(Sample.self, field: "data", record: record)
+        let decoded = try CloudKitRecordFactory.decodeFromString(Sample.self, field: "data", record: record)
         XCTAssertEqual(decoded, original)
     }
 
-    func testDecodeMissingFieldReturnsNil() {
+    func testDecodeMissingFieldThrows() {
         let record = CKRecord(recordType: "TestRecord", recordID: CKRecord.ID(recordName: "test"))
         struct Sample: Codable { let name: String }
-        XCTAssertNil(CloudKitRecordFactory.decodeFromString(Sample.self, field: "nonexistent", record: record))
+        XCTAssertThrowsError(try CloudKitRecordFactory.decodeFromString(Sample.self, field: "nonexistent", record: record))
     }
 
-    func testDecodeInvalidJSONReturnsNil() {
+    func testDecodeInvalidJSONThrows() {
         let record = CKRecord(recordType: "TestRecord", recordID: CKRecord.ID(recordName: "test"))
         record["data"] = "not valid json {{{"
         struct Sample: Codable { let name: String }
-        XCTAssertNil(CloudKitRecordFactory.decodeFromString(Sample.self, field: "data", record: record))
+        XCTAssertThrowsError(try CloudKitRecordFactory.decodeFromString(Sample.self, field: "data", record: record))
     }
 
-    func testDecodeFromAssetWithMissingFieldReturnsNil() {
+    func testDecodeFromAssetWithMissingFieldThrows() {
         let record = CKRecord(recordType: "TestRecord", recordID: CKRecord.ID(recordName: "test"))
-        XCTAssertNil(CloudKitRecordFactory.decodeFromAsset(String.self, field: "nonexistent", record: record))
+        XCTAssertThrowsError(try CloudKitRecordFactory.decodeFromAsset(String.self, field: "nonexistent", record: record))
     }
 
-    func testEncodeToStringWithNonASCII() {
+    func testEncodeToStringWithNonASCII() throws {
         let record = CKRecord(recordType: "TestRecord", recordID: CKRecord.ID(recordName: "test"))
         struct Data: Codable, Equatable { let text: String }
         let original = Data(text: "Hello \u{4E16}\u{754C}")
         XCTAssertNoThrow(try CloudKitRecordFactory.encodeToString(original, field: "data", record: record))
-        XCTAssertEqual(CloudKitRecordFactory.decodeFromString(Data.self, field: "data", record: record), original)
+        XCTAssertEqual(try CloudKitRecordFactory.decodeFromString(Data.self, field: "data", record: record), original)
     }
 
     func testDataFromAssetWithoutURLThrows() {
@@ -179,6 +179,7 @@ final class ErrorDescriptionTests: XCTestCase {
     func testRecordFactoryErrorDescriptions() {
         XCTAssertFalse(CloudKitRecordFactoryError.invalidAssetURL.errorDescription?.isEmpty ?? true)
         XCTAssertFalse(CloudKitRecordFactoryError.encodingFailed.errorDescription?.isEmpty ?? true)
+        XCTAssertFalse(CloudKitRecordFactoryError.missingField("test").errorDescription?.isEmpty ?? true)
     }
 
     func testSyncEventCases() {
@@ -384,10 +385,8 @@ final class SyncCoordinatorTests: XCTestCase {
 
     func testConflictResolverCallback() {
         let coordinator = CloudKitSyncCoordinator.shared
-        var resolverCalled = false
 
         coordinator.conflictResolver = { _, server in
-            resolverCalled = true
             return server
         }
 

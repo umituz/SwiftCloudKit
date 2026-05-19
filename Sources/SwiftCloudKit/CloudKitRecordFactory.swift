@@ -102,15 +102,14 @@ public enum CloudKitRecordFactory {
     }
 
     /// Decode a Codable object from a CKAsset field.
-    /// Returns `nil` if the field is missing or contains invalid data.
-    public static func decodeFromAsset<T: Decodable>(_ type: T.Type, field: String, record: CKRecord) -> T? {
-        guard let asset = record[field] as? CKAsset else { return nil }
-        do {
-            let data = try data(from: asset)
-            return try JSONDecoder().decode(type, from: data)
-        } catch {
-            return nil
+    /// Throws ``CloudKitRecordFactoryError/missingField`` if the field is absent.
+    /// Throws underlying errors for invalid asset data or decoding failures.
+    public static func decodeFromAsset<T: Decodable>(_ type: T.Type, field: String, record: CKRecord) throws -> T {
+        guard let asset = record[field] as? CKAsset else {
+            throw CloudKitRecordFactoryError.missingField(field)
         }
+        let data = try data(from: asset)
+        return try JSONDecoder().decode(type, from: data)
     }
 
     /// Store a Codable value as a JSON string field.
@@ -123,15 +122,16 @@ public enum CloudKitRecordFactory {
     }
 
     /// Decode a Codable value from a JSON string field.
-    /// Returns `nil` if the field is missing or contains invalid data.
-    public static func decodeFromString<T: Decodable>(_ type: T.Type, field: String, record: CKRecord) -> T? {
-        guard let string = record[field] as? String,
-              let data = string.data(using: .utf8) else { return nil }
-        do {
-            return try JSONDecoder().decode(type, from: data)
-        } catch {
-            return nil
+    /// Throws ``CloudKitRecordFactoryError/missingField`` if the field is absent.
+    /// Throws underlying errors for invalid JSON data.
+    public static func decodeFromString<T: Decodable>(_ type: T.Type, field: String, record: CKRecord) throws -> T {
+        guard let string = record[field] as? String else {
+            throw CloudKitRecordFactoryError.missingField(field)
         }
+        guard let data = string.data(using: .utf8) else {
+            throw CloudKitRecordFactoryError.encodingFailed
+        }
+        return try JSONDecoder().decode(type, from: data)
     }
 }
 
@@ -140,6 +140,7 @@ public enum CloudKitRecordFactory {
 public enum CloudKitRecordFactoryError: LocalizedError, Sendable {
     case invalidAssetURL
     case encodingFailed
+    case missingField(String)
 
     public var errorDescription: String? {
         switch self {
@@ -147,6 +148,8 @@ public enum CloudKitRecordFactoryError: LocalizedError, Sendable {
             return "CKAsset has no valid file URL."
         case .encodingFailed:
             return "Failed to encode value to UTF-8 string."
+        case .missingField(let field):
+            return "Required field '\(field)' is missing from the record."
         }
     }
 }
