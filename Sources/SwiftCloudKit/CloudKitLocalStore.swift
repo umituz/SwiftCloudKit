@@ -40,9 +40,14 @@ public final class CloudKitLocalStore {
         self.userDefaults = userDefaults
         self.fileManager = fileManager
 
-        let cachesURL = fileManager.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        guard let cachesURL = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first else {
+            logger.critical("Caches directory unavailable — using temporary fallback")
+            self.cacheDirectory = fileManager.temporaryDirectory.appendingPathComponent(Self.cacheDirectoryName)
+            try? fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+            validateCacheVersion()
+            return
+        }
         self.cacheDirectory = cachesURL.appendingPathComponent(Self.cacheDirectoryName)
-
         try? fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
         validateCacheVersion()
     }

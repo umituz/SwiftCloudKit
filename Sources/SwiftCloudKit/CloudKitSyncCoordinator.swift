@@ -433,18 +433,29 @@ public final class CloudKitSyncCoordinator: ObservableObject {
         )
         operation.fetchAllChanges = true
 
+        let lock = NSLock()
         var modified: [CKRecord] = []
         var deleted: [CKRecord.ID] = []
         var token: CKServerChangeToken?
 
         operation.recordWasChangedBlock = { _, result in
-            if let record = try? result.get() { modified.append(record) }
+            if let record = try? result.get() {
+                lock.lock()
+                modified.append(record)
+                lock.unlock()
+            }
         }
         operation.recordWithIDWasDeletedBlock = { recordID, _ in
+            lock.lock()
             deleted.append(recordID)
+            lock.unlock()
         }
         operation.recordZoneFetchResultBlock = { _, result in
-            if let zoneResult = try? result.get() { token = zoneResult.serverChangeToken }
+            if let zoneResult = try? result.get() {
+                lock.lock()
+                token = zoneResult.serverChangeToken
+                lock.unlock()
+            }
         }
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
