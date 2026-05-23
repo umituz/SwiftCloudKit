@@ -355,7 +355,7 @@ Change token persistence and record caching.
 
 ```swift
 // Change token (automatically managed)
-CloudKitLocalStore.shared.serverChangeTokens
+CloudKitLocalStore.shared.serverChangeToken
 
 // Record cache
 CloudKitLocalStore.shared.cacheRecord(record)

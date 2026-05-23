@@ -1,10 +1,3 @@
-//
-//  CloudKitLocalStore.swift
-//  SwiftCloudKit
-//
-//  Handles change token persistence and record caching with error reporting.
-//
-
 import CloudKit
 import Foundation
 import os.log

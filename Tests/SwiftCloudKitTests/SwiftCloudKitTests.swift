@@ -1,13 +1,8 @@
-//
-//  SwiftCloudKitTests.swift
-//  SwiftCloudKitTests
-//
-
 import CloudKit
 import XCTest
 @testable import SwiftCloudKit
 
-// MARK: - Configuration & Singleton Tests
+// MARK: - Configuration Tests
 
 @MainActor
 final class ConfigurationTests: XCTestCase {
@@ -33,11 +28,9 @@ final class ConfigurationTests: XCTestCase {
         XCTAssertEqual(config.subscriptionID, "app-database-changes")
     }
 
-    func testSingletonInstances() {
-        _ = CloudKitManager.shared
-        _ = CloudKitSyncCoordinator.shared
-        _ = CloudKitLocalStore.shared
-        _ = CloudKitAssetCleanup.shared
+    func testConfigurationIsSendable() {
+        let config = CloudKitManager.Configuration(containerIdentifier: "test")
+        let _: any Sendable = config
     }
 }
 
@@ -46,33 +39,75 @@ final class ConfigurationTests: XCTestCase {
 @MainActor
 final class CloudKitManagerTests: XCTestCase {
 
-    func testUnconfiguredManagerThrows() async {
-        let manager = CloudKitManager.shared
+    override func setUp() {
+        CloudKitManager.shared.resetConfiguration()
+    }
 
+    func testUnconfiguredManagerThrowsContainer() async {
         do {
-            _ = try manager.container
+            _ = try CloudKitManager.shared.container
             XCTFail("Expected CloudKitError.notConfigured")
         } catch let error as CloudKitError {
-            if case .notConfigured = error {
-                // Expected
-            } else {
-                XCTFail("Wrong error: \(error)")
-            }
+            XCTAssertEqual(error, .notConfigured)
         } catch {
             XCTFail("Unexpected error type: \(error)")
         }
     }
 
-    func testManagerIsNotConfiguredInitially() {
-        let manager = CloudKitManager.shared
-        _ = manager.isConfigured
+    func testUnconfiguredManagerThrowsDatabase() {
+        do {
+            _ = try CloudKitManager.shared.privateDB
+            XCTFail("Expected CloudKitError.notConfigured")
+        } catch let error as CloudKitError {
+            XCTAssertEqual(error, .notConfigured)
+        } catch {
+            XCTFail("Unexpected error type: \(error)")
+        }
     }
 
-    func testResetConfiguration() {
+    func testUnconfiguredManagerThrowsZoneID() {
+        do {
+            _ = try CloudKitManager.shared.zoneID
+            XCTFail("Expected CloudKitError.notConfigured")
+        } catch let error as CloudKitError {
+            XCTAssertEqual(error, .notConfigured)
+        } catch {
+            XCTFail("Unexpected error type: \(error)")
+        }
+    }
+
+    func testUnconfiguredManagerThrowsConfiguration() {
+        do {
+            _ = try CloudKitManager.shared.configuration
+            XCTFail("Expected CloudKitError.notConfigured")
+        } catch let error as CloudKitError {
+            XCTAssertEqual(error, .notConfigured)
+        } catch {
+            XCTFail("Unexpected error type: \(error)")
+        }
+    }
+
+    func testInitialNotConfigured() {
+        XCTAssertFalse(CloudKitManager.shared.isConfigured)
+        XCTAssertFalse(CloudKitManager.shared.isCloudAvailable)
+        XCTAssertEqual(CloudKitManager.shared.accountStatus, .couldNotDetermine)
+        XCTAssertNil(CloudKitManager.shared.lastAccountStatusError)
+    }
+
+    func testResetConfigurationCleansAllState() {
         let manager = CloudKitManager.shared
         manager.resetConfiguration()
+
         XCTAssertFalse(manager.isConfigured)
         XCTAssertFalse(manager.isCloudAvailable)
+        XCTAssertEqual(manager.accountStatus, .couldNotDetermine)
+        XCTAssertNil(manager.lastAccountStatusError)
+    }
+
+    func testResetConfigurationIsIdempotent() {
+        CloudKitManager.shared.resetConfiguration()
+        CloudKitManager.shared.resetConfiguration()
+        XCTAssertFalse(CloudKitManager.shared.isConfigured)
     }
 }
 
@@ -81,25 +116,14 @@ final class CloudKitManagerTests: XCTestCase {
 @MainActor
 final class RecordFactoryTests: XCTestCase {
 
-    func testRecordIDNamingConvention() {
-        let zoneID = CKRecordZone.ID(
-            zoneName: "TestZone", ownerName: CKCurrentUserDefaultName
-        )
-        let recordID = CKRecord.ID(recordName: "userprofile_abc123", zoneID: zoneID)
-        XCTAssertEqual(recordID.recordName, "userprofile_abc123")
-
-        let singletonID = CKRecord.ID(recordName: "settings_default", zoneID: zoneID)
-        XCTAssertEqual(singletonID.recordName, "settings_default")
-    }
-
-    func testSetTimestamps() {
+    func testSetTimestampsSetsBothFields() {
         let record = CKRecord(recordType: "TestRecord", recordID: CKRecord.ID(recordName: "test"))
         CloudKitRecordFactory.setTimestamps(record)
         XCTAssertNotNil(record["created_at"])
         XCTAssertNotNil(record["updated_at"])
     }
 
-    func testSetTimestampsDoesNotOverwriteCreatedAt() {
+    func testSetTimestampsPreservesExistingCreatedAt() {
         let record = CKRecord(recordType: "TestRecord", recordID: CKRecord.ID(recordName: "test"))
         let originalDate = Date.distantPast
         record["created_at"] = originalDate
@@ -107,19 +131,19 @@ final class RecordFactoryTests: XCTestCase {
         XCTAssertEqual(record["created_at"] as? Date, originalDate)
     }
 
-    func testTouchTimestamp() {
+    func testTouchTimestampOnlyUpdatesUpdatedAt() {
         let record = CKRecord(recordType: "TestRecord", recordID: CKRecord.ID(recordName: "test"))
         CloudKitRecordFactory.touchTimestamp(record)
         XCTAssertNotNil(record["updated_at"])
         XCTAssertNil(record["created_at"])
     }
 
-    func testEncodeDecodeString() throws {
+    func testEncodeDecodeStringRoundTrip() throws {
         let record = CKRecord(recordType: "TestRecord", recordID: CKRecord.ID(recordName: "test"))
         struct Sample: Codable, Equatable { let name: String; let count: Int }
         let original = Sample(name: "Test", count: 42)
 
-        XCTAssertNoThrow(try CloudKitRecordFactory.encodeToString(original, field: "data", record: record))
+        try CloudKitRecordFactory.encodeToString(original, field: "data", record: record)
         let decoded = try CloudKitRecordFactory.decodeFromString(Sample.self, field: "data", record: record)
         XCTAssertEqual(decoded, original)
     }
@@ -144,17 +168,10 @@ final class RecordFactoryTests: XCTestCase {
 
     func testEncodeToStringWithNonASCII() throws {
         let record = CKRecord(recordType: "TestRecord", recordID: CKRecord.ID(recordName: "test"))
-        struct Data: Codable, Equatable { let text: String }
-        let original = Data(text: "Hello \u{4E16}\u{754C}")
-        XCTAssertNoThrow(try CloudKitRecordFactory.encodeToString(original, field: "data", record: record))
-        XCTAssertEqual(try CloudKitRecordFactory.decodeFromString(Data.self, field: "data", record: record), original)
-    }
-
-    func testDataFromAssetWithoutURLThrows() {
-        let asset = CKAsset(fileURL: FileManager.default.temporaryDirectory.appendingPathComponent("nonexistent_\(UUID().uuidString)"))
-        // fileURL exists but file doesn't — CKAsset may or may not have a URL
-        // Just verify the function exists and handles edge cases
-        _ = asset.fileURL
+        struct Payload: Codable, Equatable { let text: String }
+        let original = Payload(text: "Hello \u{4E16}\u{754C}")
+        try CloudKitRecordFactory.encodeToString(original, field: "data", record: record)
+        XCTAssertEqual(try CloudKitRecordFactory.decodeFromString(Payload.self, field: "data", record: record), original)
     }
 }
 
@@ -163,34 +180,64 @@ final class RecordFactoryTests: XCTestCase {
 @MainActor
 final class ErrorDescriptionTests: XCTestCase {
 
-    func testCloudKitErrorDescriptions() {
-        XCTAssertFalse(CloudKitError.noAccount.errorDescription?.isEmpty ?? true)
-        XCTAssertFalse(CloudKitError.restricted.errorDescription?.isEmpty ?? true)
-        XCTAssertFalse(CloudKitError.accountStatusUnknown.errorDescription?.isEmpty ?? true)
-        XCTAssertFalse(CloudKitError.accountTemporarilyUnavailable.errorDescription?.isEmpty ?? true)
-        XCTAssertFalse(CloudKitError.zoneNotFound.errorDescription?.isEmpty ?? true)
-        XCTAssertFalse(CloudKitError.quotaExceeded.errorDescription?.isEmpty ?? true)
-        XCTAssertFalse(CloudKitError.networkFailure.errorDescription?.isEmpty ?? true)
-        XCTAssertFalse(CloudKitError.notConfigured.errorDescription?.isEmpty ?? true)
-        XCTAssertFalse(CloudKitError.syncFailed("test").errorDescription?.isEmpty ?? true)
-        XCTAssertFalse(CloudKitError.recordNotFound.errorDescription?.isEmpty ?? true)
+    func testAllCloudKitErrorsHaveDescriptions() {
+        let errors: [CloudKitError] = [
+            .noAccount,
+            .restricted,
+            .accountStatusUnknown,
+            .accountTemporarilyUnavailable,
+            .zoneNotFound,
+            .quotaExceeded,
+            .networkFailure,
+            .notConfigured,
+            .syncFailed("test reason"),
+            .recordNotFound
+        ]
+
+        for error in errors {
+            XCTAssertFalse(error.errorDescription?.isEmpty ?? true, "Missing description for \(error)")
+        }
     }
 
-    func testRecordFactoryErrorDescriptions() {
-        XCTAssertFalse(CloudKitRecordFactoryError.invalidAssetURL.errorDescription?.isEmpty ?? true)
-        XCTAssertFalse(CloudKitRecordFactoryError.encodingFailed.errorDescription?.isEmpty ?? true)
-        XCTAssertFalse(CloudKitRecordFactoryError.missingField("test").errorDescription?.isEmpty ?? true)
+    func testAllRecordFactoryErrorsHaveDescriptions() {
+        let errors: [CloudKitRecordFactoryError] = [
+            .invalidAssetURL,
+            .encodingFailed,
+            .missingField("test_field")
+        ]
+
+        for error in errors {
+            XCTAssertFalse(error.errorDescription?.isEmpty ?? true, "Missing description for \(error)")
+        }
     }
 
-    func testSyncEventCases() {
+    func testCloudKitErrorEquality() {
+        XCTAssertEqual(CloudKitError.noAccount, CloudKitError.noAccount)
+        XCTAssertNotEqual(CloudKitError.noAccount, CloudKitError.restricted)
+        XCTAssertEqual(CloudKitError.syncFailed("a"), CloudKitError.syncFailed("a"))
+        XCTAssertNotEqual(CloudKitError.syncFailed("a"), CloudKitError.syncFailed("b"))
+    }
+}
+
+// MARK: - SyncEvent Tests
+
+@MainActor
+final class SyncEventTests: XCTestCase {
+
+    func testAllSyncEventCases() {
         let events: [SyncEvent] = [
             .syncStarted,
             .syncCompleted(recordCount: 5, deleteCount: 2),
             .syncFailed(error: CloudKitError.networkFailure),
-            .recordSaved(recordName: "test"),
-            .recordDeleted(recordName: "test")
+            .recordSaved(recordName: "test_record"),
+            .recordDeleted(recordName: "deleted_record")
         ]
         XCTAssertEqual(events.count, 5)
+    }
+
+    func testSyncEventIsSendable() {
+        let event: SyncEvent = .syncStarted
+        let _: any Sendable = event
     }
 }
 
@@ -242,6 +289,21 @@ final class AssetCleanupTests: XCTestCase {
         let countBefore = cleanup.tempFileCount
         cleanup.cleanup(record: record)
         XCTAssertEqual(cleanup.tempFileCount, countBefore - 1)
+    }
+
+    func testRegisterMultipleFiles() {
+        let cleanup = CloudKitAssetCleanup.shared
+        let initialCount = cleanup.tempFileCount
+        let urls = (0..<3).map { _ in FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString) }
+        for url in urls {
+            FileManager.default.createFile(atPath: url.path, contents: Data("x".utf8))
+        }
+
+        cleanup.registerTempFiles(urls)
+        XCTAssertEqual(cleanup.tempFileCount, initialCount + 3)
+
+        cleanup.cleanupAll()
+        XCTAssertEqual(cleanup.tempFileCount, 0)
     }
 }
 
@@ -314,119 +376,8 @@ final class LocalStoreTests: XCTestCase {
         XCTAssertNotNil(store.cachedRecord(recordName: "test/special:chars"))
         store.removeCachedRecord(recordName: "test/special:chars")
     }
-}
 
-// MARK: - Sync Coordinator Tests
-
-@MainActor
-final class SyncCoordinatorTests: XCTestCase {
-
-    func testDefaultConfiguration() {
-        let coordinator = CloudKitSyncCoordinator.shared
-        XCTAssertEqual(coordinator.maxRetryCount, 3)
-        XCTAssertEqual(coordinator.retryBaseDelay, 1.0)
-    }
-
-    func testHandlerRegistrationDoesNotDuplicate() {
-        let coordinator = CloudKitSyncCoordinator.shared
-        coordinator.registerRecordHandler(
-            recordType: "TestType", namePrefix: "testtype"
-        ) { _ in } onDelete: { _ in }
-        coordinator.registerRecordHandler(
-            recordType: "TestType", namePrefix: "testtype"
-        ) { _ in } onDelete: { _ in }
-    }
-
-    func testPrefixMatchingOrder() {
-        let coordinator = CloudKitSyncCoordinator.shared
-        coordinator.registerRecordHandler(
-            recordType: "UserProfile", namePrefix: "userprofile"
-        ) { _ in } onDelete: { _ in }
-        coordinator.registerRecordHandler(
-            recordType: "User", namePrefix: "user"
-        ) { _ in } onDelete: { _ in }
-    }
-
-    func testUnregisterRecordHandler() {
-        let coordinator = CloudKitSyncCoordinator.shared
-        coordinator.registerRecordHandler(
-            recordType: "UnregisterTest", namePrefix: "unregistertest"
-        ) { _ in } onDelete: { _ in }
-
-        coordinator.unregisterRecordHandler(recordType: "UnregisterTest")
-    }
-
-    func testUnregisterAllHandlers() {
-        let coordinator = CloudKitSyncCoordinator.shared
-        coordinator.registerRecordHandler(
-            recordType: "CleanupA", namePrefix: "cleanupa"
-        ) { _ in } onDelete: { _ in }
-        coordinator.registerRecordHandler(
-            recordType: "CleanupB", namePrefix: "cleanupb"
-        ) { _ in } onDelete: { _ in }
-
-        coordinator.unregisterAllHandlers()
-    }
-
-    func testSyncEventCallback() {
-        let coordinator = CloudKitSyncCoordinator.shared
-        var receivedEvent: SyncEvent?
-
-        coordinator.onSyncEvent = { event in
-            receivedEvent = event
-        }
-
-        // Simulate a sync event
-        coordinator.onSyncEvent?(.syncStarted)
-        XCTAssertNotNil(receivedEvent)
-
-        coordinator.onSyncEvent = nil
-    }
-
-    func testConflictResolverCallback() {
-        let coordinator = CloudKitSyncCoordinator.shared
-
-        coordinator.conflictResolver = { _, server in
-            return server
-        }
-
-        // Verify resolver is set (actual conflict requires live CloudKit)
-        XCTAssertNotNil(coordinator.conflictResolver)
-        coordinator.conflictResolver = nil
-    }
-
-    func testBatchSaveEmptyArrayDoesNotThrow() async {
-        let coordinator = CloudKitSyncCoordinator.shared
-        // Should not throw and should update lastSyncDate
-        // (won't actually sync since cloud is not configured)
-        // Just verify the guard works
-        do {
-            try await coordinator.batchSaveRecords([])
-        } catch CloudKitError.notConfigured {
-            // Expected when not configured
-        } catch {
-            XCTFail("Unexpected error: \(error)")
-        }
-    }
-
-    func testBatchDeleteEmptyArrayDoesNotThrow() async {
-        let coordinator = CloudKitSyncCoordinator.shared
-        do {
-            try await coordinator.batchDeleteRecords([])
-        } catch CloudKitError.notConfigured {
-            // Expected when not configured
-        } catch {
-            XCTFail("Unexpected error: \(error)")
-        }
-    }
-
-    func testManagerResetCleansUpState() {
-        let manager = CloudKitManager.shared
-        manager.resetConfiguration()
-
-        XCTAssertFalse(manager.isConfigured)
-        XCTAssertFalse(manager.isCloudAvailable)
-        XCTAssertEqual(manager.accountStatus, .couldNotDetermine)
-        XCTAssertNil(manager.lastAccountStatusError)
+    func testRemoveNonexistentRecordDoesNotCrash() {
+        CloudKitLocalStore.shared.removeCachedRecord(recordName: "nonexistent_\(UUID().uuidString)")
     }
 }

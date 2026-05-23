@@ -1,10 +1,3 @@
-//
-//  CloudKitManager.swift
-//  SwiftCloudKit
-//
-//  Configurable CloudKit manager for container lifecycle, zones, subscriptions, and account monitoring.
-//
-
 @preconcurrency import CloudKit
 import Foundation
 import os.log
@@ -106,6 +99,12 @@ public final class CloudKitManager: ObservableObject {
 
     private init() {}
 
+    deinit {
+        if let observer = accountStatusObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
     // MARK: - Configuration
 
     /// Configure CloudKit with app-specific settings. Throws if iCloud account is unavailable.
@@ -198,7 +197,6 @@ public final class CloudKitManager: ObservableObject {
     // MARK: - Account Status
 
     private func checkAccountStatus() async throws {
-        _ = try privateDB
         let ckContainer = try container
         let status = try await ckContainer.accountStatus()
         accountStatus = status
@@ -309,12 +307,11 @@ public final class CloudKitManager: ObservableObject {
         _ = try await database.save(subscription)
         logger.info("Created database subscription: \(subID)")
     }
-
 }
 
 // MARK: - Errors
 
-public enum CloudKitError: LocalizedError, Sendable {
+public enum CloudKitError: LocalizedError, Sendable, Equatable {
     case noAccount
     case restricted
     case accountStatusUnknown

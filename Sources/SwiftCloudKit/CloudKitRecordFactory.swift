@@ -1,11 +1,3 @@
-//
-//  CloudKitRecordFactory.swift
-//  SwiftCloudKit
-//
-//  Generic utilities for CloudKit record creation and manipulation.
-//  Each app should create its own record factory extension or wrapper.
-//
-
 import CloudKit
 import Foundation
 import os.log

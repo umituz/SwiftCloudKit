@@ -1,10 +1,3 @@
-//
-//  CloudKitSyncRetryPolicy.swift
-//  SwiftCloudKit
-//
-//  Retry logic for transient CloudKit failures with exponential backoff.
-//
-
 import CloudKit
 import Foundation
 import os.log
@@ -15,6 +8,8 @@ struct CloudKitSyncRetryPolicy {
 
     let maxRetryCount: Int
     let baseDelay: TimeInterval
+    /// Maximum delay cap between retries (seconds).
+    static let maxRetryDelay: TimeInterval = 30.0
     let logger = Logger(subsystem: "SwiftCloudKit", category: "Retry")
 
     /// Determine whether a CKError is retryable.
@@ -33,10 +28,12 @@ struct CloudKitSyncRetryPolicy {
 
     /// Execute an async operation with exponential backoff retry.
     /// Throws the last encountered error if all retries are exhausted.
+    /// Executes at least once regardless of `maxRetryCount`.
     func executeWithRetry(_ operation: () async throws -> Void) async throws {
         var lastError: Error?
+        let effectiveAttempts = max(1, maxRetryCount)
 
-        for attempt in 0..<maxRetryCount {
+        for attempt in 0..<effectiveAttempts {
             do {
                 try await operation()
                 return
@@ -44,7 +41,7 @@ struct CloudKitSyncRetryPolicy {
                 lastError = error
                 if attempt < maxRetryCount - 1 {
                     let delay = baseDelay * pow(2.0, Double(attempt))
-                    let capped = min(delay, 30.0)
+                    let capped = min(delay, Self.maxRetryDelay)
                     logger.warning("Retry \(attempt + 1)/\(maxRetryCount) in \(capped)s")
                     try await Task.sleep(for: .seconds(capped))
                 }

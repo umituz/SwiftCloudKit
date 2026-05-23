@@ -1,10 +1,3 @@
-//
-//  CloudKitAssetCleanup.swift
-//  SwiftCloudKit
-//
-//  Manages temp file lifecycle for CKAsset operations.
-//
-
 import CloudKit
 import Foundation
 import os.log
@@ -28,11 +21,13 @@ public final class CloudKitAssetCleanup {
 
     /// Prefix used to tag temp files created by SwiftCloudKit.
     static let filePrefix = "sck_temp_"
+    /// Maximum age (in seconds) before a temp file is considered stale.
+    private static let staleFileAge: TimeInterval = 3600
 
     // MARK: - Initialization
 
-    private init() {
-        self.fileManager = .default
+    private init(fileManager: FileManager = .default) {
+        self.fileManager = fileManager
         cleanStaleTempFiles()
     }
 
@@ -48,9 +43,9 @@ public final class CloudKitAssetCleanup {
         tempFiles.formUnion(urls)
     }
 
-    /// Cleanup temp files whose filename contains the given identifier.
+    /// Cleanup temp files whose filename matches the given identifier exactly.
     public func cleanupTempFiles(for identifier: String) {
-        let filesToRemove = tempFiles.filter { $0.lastPathComponent.contains(identifier) }
+        let filesToRemove = tempFiles.filter { $0.lastPathComponent == identifier }
         for fileURL in filesToRemove {
             removeTempFile(fileURL)
         }
@@ -105,14 +100,13 @@ public final class CloudKitAssetCleanup {
         }
 
         let now = Date()
-        let staleAge: TimeInterval = 3600 // 1 hour
 
         for fileURL in contents {
             guard fileURL.lastPathComponent.hasPrefix(Self.filePrefix) else { continue }
 
             if let attrs = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey]),
                let modDate = attrs.contentModificationDate,
-               now.timeIntervalSince(modDate) > staleAge {
+               now.timeIntervalSince(modDate) > Self.staleFileAge {
                 removeTempFile(fileURL)
             }
         }
